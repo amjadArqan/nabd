@@ -87,3 +87,7 @@ The same binary works in the terminal (`/Applications/Nabd.app/Contents/MacOS/Na
 rm -rf /Applications/Nabd.app
 defaults delete local.nabd.monitor
 ```
+
+## License
+
+MIT © Amjad Arqan — see [LICENSE](LICENSE).
