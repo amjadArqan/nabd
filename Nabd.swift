@@ -1313,7 +1313,6 @@ enum CLI {
 
 final class Model: ObservableObject {
     @Published var snap = Snapshot()
-    @Published var history: [(temp: Double, cpu: Double, mem: Double)] = []
     @Published var compact = UserDefaults.standard.bool(forKey: "compact") {
         didSet {
             UserDefaults.standard.set(compact, forKey: "compact")
@@ -1473,8 +1472,6 @@ final class Model: ObservableObject {
         snap = s
         pushGuardInput(runNow: false)
         trackEnergy(s.power?.draw)
-        history.append((s.temps.cpu ?? 0, s.cpuTotal, s.mem.percent))
-        if history.count > 60 { history.removeFirst(history.count - 60) }
         onUpdate?()
     }
 
@@ -1510,7 +1507,6 @@ final class Model: ObservableObject {
             apply(sampler.sample(full: i == samples - 1, carrying: snap))
             usleep(300_000)
         }
-        history.removeFirst()
     }
 
     func setLoginItem(_ on: Bool) {
@@ -1554,192 +1550,212 @@ extension Level {
     }
 }
 
-struct Sparkline: View {
-    let values: [Double]
-    let range: ClosedRange<Double>
-    let color: Color
+// MARK: Building blocks
 
-    var body: some View {
-        GeometryReader { geo in
-            Path { path in
-                guard values.count > 1 else { return }
-                let span = range.upperBound - range.lowerBound
-                for (i, raw) in values.enumerated() {
-                    let v = min(max(raw, range.lowerBound), range.upperBound)
-                    let point = CGPoint(x: geo.size.width * CGFloat(i) / CGFloat(values.count - 1),
-                                        y: geo.size.height * (1 - CGFloat((v - range.lowerBound) / span)))
-                    if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                }
-            }
-            .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-        }
-    }
-}
-
-struct MetricCard: View {
-    let title: String
-    let icon: String
+/// One metric as a ring, the way macOS widgets show capacity.
+struct Ring: View {
+    let caption: String
     let value: String
+    let fraction: Double
     let level: Level
-    let lines: [String]
-    let history: [Double]
-    let range: ClosedRange<Double>
+    let detail: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 10))
-                Text(title).font(.system(size: 11, weight: .medium))
+        VStack(spacing: 5) {
+            ZStack {
+                Circle().stroke(Color.primary.opacity(0.08), lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: max(0.001, min(1, fraction)))
+                    .stroke(level == .ok ? Color.accentColor : level.color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text(value)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(level == .ok ? Color.primary : level.color)
+                    .contentTransition(.numericText())
             }
-            .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 26, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(level.color)
-            Sparkline(values: history, range: range, color: level == .ok ? Color.accentColor : level.color)
-                .frame(height: 16)
-                .padding(.vertical, 2)
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                Text(line).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
-            }
+            .frame(width: 58, height: 58)
+            Text(caption).font(.system(size: 11, weight: .medium))
+            Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.06)))
+        .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: fraction)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: value)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(caption) \(value), \(detail)")
     }
 }
 
-struct RowActions: View {
-    let calm: Bool
-    let onCalm: () -> Void
-    let onKill: () -> Void
+/// A grouped surface, like the boxes in System Settings.
+struct Card<Content: View>: View {
+    @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onCalm) { Image(systemName: calm ? "leaf.fill" : "leaf").foregroundStyle(calm ? Color.green : Color.secondary) }
-                .help(calm ? "أعد السرعة الكاملة" : "هدّئ: انقلها إلى أنوية الكفاءة (أبرد وأبطأ)")
-            Button(action: onKill) { Image(systemName: "xmark").foregroundStyle(.secondary) }
-                .help("إنهاء")
-        }
-        .buttonStyle(.borderless)
-        .font(.system(size: 11, weight: .medium))
-        .frame(width: 40, alignment: .trailing)
+        VStack(alignment: .leading, spacing: 8) { content }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
     }
 }
 
-struct SessionActions: View {
-    let paused: Bool
-    let onToggle: () -> Void
-    let onKill: () -> Void
+/// List rows light up under the pointer, as in native lists.
+struct HoverRow: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(hovering ? 0.06 : 0)))
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// Small icon button with a comfortable hit area, a tooltip and a spoken name.
+struct IconButton: View {
+    let symbol: String
+    let label: String
+    var tint: Color = .secondary
+    let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onToggle) { Image(systemName: paused ? "play.fill" : "pause.fill").foregroundStyle(paused ? Color.green : Color.secondary) }
-                .help(paused ? "أكمل إجباريًا (لا تُوقف مجددًا لمدة 15 دقيقة)" : "أوقف مهام هذه الجلسة مؤقتًا حتى أكملها بنفسي")
-            Button(action: onKill) { Image(systemName: "xmark").foregroundStyle(.secondary) }
-                .help("إنهاء")
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .font(.system(size: 11, weight: .medium))
-        .frame(width: 40, alignment: .trailing)
+        .help(label)
+        .accessibilityLabel(label)
     }
 }
 
 struct PopoverView: View {
     @ObservedObject var model: Model
+    @State private var section = 0
     @State private var tab = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let s = model.snap
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             header(s)
-            HStack(alignment: .top, spacing: 8) {
-                MetricCard(title: "الحرارة", icon: "thermometer.medium", value: s.temps.cpu.map { ltr(String(format: "%.0f°", $0)) } ?? "—",
-                           level: s.tempLevel, lines: tempLines(s), history: model.history.map(\.temp), range: 30...100)
-                MetricCard(title: "المعالج", icon: "cpu", value: ltr(fmtPct(s.cpuTotal)), level: s.cpuLevel, lines: cpuLines(s),
-                           history: model.history.map(\.cpu), range: 0...100)
-                MetricCard(title: "الذاكرة", icon: "memorychip", value: ltr(fmtPct(s.mem.percent)), level: s.memLevel, lines: memLines(s),
-                           history: model.history.map(\.mem), range: 0...100)
+            rings(s)
+            Picker("", selection: $section) {
+                Text("نظرة عامة").tag(0)
+                Text("الجلسات").tag(1)
+                Text("العمليات").tag(2)
             }
-            if let power = s.power { powerCard(power) }
-            adviceSection(s)
-            if let p = s.procs {
-                claudeSection(p)
-                topSection(p)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Group {
+                switch section {
+                case 1: sessionsSection(s)
+                case 2: processesSection(s)
+                default: overviewSection(s)
+                }
             }
-            guardSection
-            Divider()
-            footer
+            .transition(.opacity)
         }
         .padding(14)
-        .frame(width: 430)
+        .frame(width: 420)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: section)
         .environment(\.layoutDirection, .rightToLeft)
     }
 
-    // MARK: Header and cards
+    // MARK: Header
 
     private func header(_ s: Snapshot) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "waveform.path.ecg").foregroundStyle(Color.accentColor)
+            Image(systemName: "waveform.path.ecg").font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentColor)
+                .accessibilityHidden(true)
             Text("نبض").font(.system(size: 15, weight: .bold))
-            Text("الحرارة \(s.thermal.arabic)")
+            Label("الحرارة \(s.thermal.arabic)", systemImage: s.tempLevel == .ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .labelStyle(.titleAndIcon)
                 .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(s.tempLevel == .ok ? Color.green : s.tempLevel.color)
                 .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Capsule().fill((s.tempLevel == .ok ? Color.green : s.tempLevel.color).opacity(0.18)))
+                .background(Capsule().fill((s.tempLevel == .ok ? Color.green : s.tempLevel.color).opacity(0.14)))
             Spacer()
             Text("يعمل منذ \(fmtDuration(s.uptime))").font(.system(size: 10)).foregroundStyle(.secondary)
+            settingsMenu
         }
     }
 
-    private func tempLines(_ s: Snapshot) -> [String] {
-        var lines: [String] = []
-        var first: [String] = []
-        if let m = s.temps.cpuMax { first.append("الأعلى " + ltr(String(format: "%.0f°", m))) }
-        if let g = s.temps.gpu { first.append(ltr(String(format: "GPU %.0f°", g))) }
-        if !first.isEmpty { lines.append(first.joined(separator: " · ")) }
-        if let fan = s.temps.fans.max(by: { $0.rpm < $1.rpm }) {
-            lines.append("المراوح " + ltr(String(format: "%.0f rpm", fan.rpm)))
-        } else if let b = s.temps.battery {
-            lines.append("البطارية " + ltr(String(format: "%.0f°", b)))
+    private var settingsMenu: some View {
+        Menu {
+            Toggle("عرض مختصر في شريط القوائم", isOn: $model.compact)
+            Toggle("تشغيل مع الجهاز", isOn: Binding(get: { model.loginItem }, set: { model.setLoginItem($0) }))
+            Divider()
+            Button("فتح مراقب النشاط") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+            }
+            Divider()
+            Button("إغلاق نبض") { NSApp.terminate(nil) }
+        } label: {
+            Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
         }
-        return lines
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("الإعدادات")
+        .accessibilityLabel("الإعدادات")
     }
 
-    private func cpuLines(_ s: Snapshot) -> [String] {
-        var lines: [String] = []
-        if let p = s.cpuP, let e = s.cpuE { lines.append("أداء \(ltr(fmtPct(p))) · كفاءة \(ltr(fmtPct(e)))") }
-        lines.append("الحمل \(ltr(String(format: "%.1f", s.load[0]))) على \(s.ncpu) أنوية")
-        return lines
+    // MARK: Rings
+
+    private func rings(_ s: Snapshot) -> some View {
+        let temp = s.temps.cpu
+        let fan = s.temps.fans.max { $0.rpm < $1.rpm }
+        let power = s.power
+        let draw = power?.draw
+        let capacity = power?.adapterWatts ?? 100
+        return HStack(alignment: .top, spacing: 4) {
+            Ring(caption: "الحرارة", value: temp.map { ltr(String(format: "%.0f°", $0)) } ?? "—",
+                 fraction: ((temp ?? 30) - 30) / 70, level: s.tempLevel,
+                 detail: fan.map { "مراوح " + ltr(String(format: "%.0f%%", $0.fraction * 100)) } ?? s.temps.cpuMax.map { "الأعلى " + ltr(String(format: "%.0f°", $0)) } ?? "")
+            Ring(caption: "المعالج", value: ltr(fmtPct(s.cpuTotal)), fraction: s.cpuTotal / 100, level: s.cpuLevel,
+                 detail: "الحمل " + ltr(String(format: "%.1f", s.load[0])))
+            Ring(caption: "الذاكرة", value: ltr(fmtPct(s.mem.percent)), fraction: s.mem.percent / 100, level: s.memLevel,
+                 detail: "سواب " + ltr(fmtBytes(s.mem.swapUsed)))
+            if power != nil {
+                Ring(caption: "الكهرباء", value: draw.map { ltr(String(format: "%.0fW", $0)) } ?? "—",
+                     fraction: (draw ?? 0) / capacity, level: .ok,
+                     detail: power?.plugged == true ? "من " + ltr(String(format: "%.0fW", capacity)) : "من البطارية")
+            }
+        }
     }
 
-    private func memLines(_ s: Snapshot) -> [String] {
-        ["\(ltr(fmtBytes(s.mem.used))) من \(ltr(fmtBytes(s.mem.total)))", "سواب \(ltr(fmtBytes(s.mem.swapUsed)))"]
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+    }
+
+    // MARK: Overview
+
+    private func overviewSection(_ s: Snapshot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let power = s.power { powerCard(power) }
+            adviceCard(s)
+            guardCard
+        }
     }
 
     private func powerCard(_ p: PowerInfo) -> some View {
         let draw = p.draw ?? 0
         let w = { (v: Double) in ltr(String(format: v < 10 ? "%.1fW" : "%.0fW", v)) }
         let energy = model.energyToday >= 1000 ? String(format: "%.2f kWh", model.energyToday / 1000) : String(format: "%.0f Wh", model.energyToday)
-        var parts: [String] = []
-        if let system = p.system { parts.append("الجهاز \(w(system))") }
-        if p.plugged, let battery = p.battery, abs(battery) >= 0.5 { parts.append(battery > 0 ? "شحن البطارية \(w(battery))" : "من البطارية \(w(-battery))") }
-        if p.plugged, let loss = p.loss, loss >= 0.1 { parts.append("فاقد الشاحن \(w(loss))") }
-        if let percent = p.percent { parts.append("البطارية \(ltr("\(percent)%"))" + (p.charging ? " تشحن" : "")) }
-        if !p.plugged, let minutes = p.minutesLeft { parts.append("يكفي \(fmtDuration(TimeInterval(minutes * 60)))") }
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 4) {
-                Image(systemName: p.plugged ? "bolt.fill" : "battery.75percent").font(.system(size: 10))
-                Text(p.plugged ? "الكهرباء من الشاحن" : "من البطارية").font(.system(size: 11, weight: .medium))
+        return Card {
+            HStack(spacing: 5) {
+                Image(systemName: p.plugged ? "bolt.fill" : "battery.75percent").foregroundStyle(p.plugged ? Color.yellow : Color.secondary)
+                    .accessibilityHidden(true)
+                Text(p.plugged ? "الكهرباء من الشاحن" : "من البطارية").font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Text(rtl("الأعلى \(w(model.powerPeak)) · اليوم \(ltr(energy))")).font(.system(size: 10))
-            }
-            .foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(w(draw)).font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit()
-                if let rating = p.adapterWatts {
-                    Text("من شاحن \(w(rating))").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                Spacer()
+                Text(rtl("الأعلى \(w(model.powerPeak)) · اليوم \(ltr(energy))")).font(.system(size: 10)).foregroundStyle(.secondary)
             }
             if let rating = p.adapterWatts, rating > 0 {
                 // How much of the charger's capacity is in use, split by where it goes.
@@ -1752,30 +1768,40 @@ struct PopoverView: View {
                         Spacer(minLength: 0)
                     }
                     .background(Color.primary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    .clipShape(Capsule())
                 }
                 .frame(height: 6)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: draw)
             }
-            Text(rtl(parts.joined(separator: " · "))).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            HStack(spacing: 12) {
+                if let system = p.system { legend(Color.accentColor, "الجهاز", w(system)) }
+                if p.plugged, let battery = p.battery, abs(battery) >= 0.5 {
+                    legend(battery > 0 ? Color.green : Color.orange, battery > 0 ? "شحن البطارية" : "من البطارية", w(abs(battery)))
+                }
+                if p.plugged, let loss = p.loss, loss >= 0.1 { legend(Color.secondary.opacity(0.6), "فاقد الشاحن", w(loss)) }
+                Spacer(minLength: 0)
+                if let percent = p.percent {
+                    Text(rtl("البطارية \(ltr("\(percent)%"))" + (!p.plugged ? p.minutesLeft.map { " · يكفي \(fmtDuration(TimeInterval($0 * 60)))" } ?? "" : "")))
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.06)))
     }
 
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+    private func legend(_ color: Color, _ title: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 6, height: 6).accessibilityHidden(true)
+            Text(rtl("\(title) \(value)")).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
     }
 
-    // MARK: Advice
-
-    @ViewBuilder private func adviceSection(_ s: Snapshot) -> some View {
+    @ViewBuilder private func adviceCard(_ s: Snapshot) -> some View {
         if s.advice.isEmpty {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("كل شيء طبيعي").font(.system(size: 12))
+            Card {
+                Label("كل شيء طبيعي", systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
             }
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            Card {
                 sectionTitle("اقتراحات")
                 ForEach(s.advice.prefix(3)) { a in
                     HStack(alignment: .top, spacing: 8) {
@@ -1784,6 +1810,7 @@ struct PopoverView: View {
                             .foregroundStyle(a.level == .ok ? Color.yellow : a.level.color)
                             .frame(width: 14)
                             .padding(.top, 1)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(rtl(a.title)).font(.system(size: 12, weight: .medium))
                             Text(rtl(a.detail)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
@@ -1795,128 +1822,14 @@ struct PopoverView: View {
                         }
                     }
                 }
-                if s.advice.count > 3 { Text("و\(s.advice.count - 3) أخرى — التفاصيل كاملة عبر: \(ltr("nabd doctor"))").font(.system(size: 10)).foregroundStyle(.secondary) }
-            }
-        }
-    }
-
-    // MARK: Claude
-
-    private func numbers(cpu: Double, mem: UInt64) -> some View {
-        HStack(spacing: 0) {
-            Text(ltr(fmtPct(cpu))).frame(width: 48, alignment: .trailing)
-            Text(ltr(fmtBytes(mem))).frame(width: 62, alignment: .trailing)
-        }
-        .font(.system(size: 11))
-        .monospacedDigit()
-    }
-
-    private func claudeSection(_ p: ProcReport) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                sectionTitle(rtl("جلسات \(ltr("Claude Code")) (\(p.sessions.count)) · خوادم \(ltr("MCP")) (\(p.mcpCount))"))
-                Spacer()
-                Text("معالج").frame(width: 48, alignment: .trailing)
-                Text("ذاكرة").frame(width: 62, alignment: .trailing)
-                Spacer().frame(width: 40)
-            }
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-            ForEach(shownSessions(p)) { x in
-                let pause = model.guardStatus.paused.first { $0.root == x.id }
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(ltr(x.label)).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                        Text(rtl(subtitle(x, pause: pause))).font(.system(size: 10))
-                            .foregroundStyle(pause != nil || x.idle ? Color.orange : Color.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    numbers(cpu: x.cpu, mem: x.mem)
-                    SessionActions(paused: pause != nil, onToggle: { pause != nil ? model.forceContinue(x.id) : model.pause(x.id) }, onKill: {
-                        model.confirmKill("جلسة Claude Code «\(x.label)»",
-                                          detail: "ستُغلق الجلسة مع \(x.pids.count - 1) عملية تابعة لها. المحادثة محفوظة ويمكن استئنافها لاحقًا.",
-                                          pids: x.pids)
-                    })
-                }
-            }
-            if p.sessions.count > 5 { Text("و\(p.sessions.count - 5) جلسات أخرى أخفّ…").font(.system(size: 10)).foregroundStyle(.secondary) }
-            if let d = p.desktop {
-                HStack(spacing: 0) {
-                    Text("تطبيق Claude · \(d.pids.count) عملية").font(.system(size: 12))
-                    Spacer(minLength: 4)
-                    numbers(cpu: d.cpu, mem: d.mem)
-                    Spacer().frame(width: 40)
+                if s.advice.count > 3 {
+                    Text("و\(s.advice.count - 3) أخرى — التفاصيل كاملة عبر: \(ltr("nabd doctor"))").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    /// Paused sessions use no CPU, so they would drop off a list ranked by CPU; keep them in view first.
-    private func shownSessions(_ p: ProcReport) -> [ClaudeSession] {
-        let paused = Set(model.guardStatus.paused.map(\.root))
-        let ranked = p.sessions.filter { paused.contains($0.id) } + p.sessions.filter { !paused.contains($0.id) }
-        return ranked.prefix(5).sorted { $0.elapsed < $1.elapsed }
-    }
-
-    private func subtitle(_ x: ClaudeSession, pause: Guard.Paused?) -> String {
-        if let pause {
-            let waited = max(0, Int(Date().timeIntervalSince(pause.since)))
-            let since = waited < 60 ? "\(waited)ث" : fmtDuration(TimeInterval(waited))
-            if pause.manual { return "⏸ أوقفتَها أنت منذ \(since) · تنتظر زر الإكمال" }
-            return "⏸ متوقفة مؤقتًا منذ \(since) · " + (pause.hot ? "حتى يبرد الجهاز" : "حتى يهدأ المعالج")
-        }
-        var parts = ["منذ \(fmtDuration(x.elapsed))", ltr("MCP \(x.mcpCount)")]
-        if let top = x.topName { parts.append("الأثقل \(ltr("\(top) \(fmtPct(x.topCPU))"))") }
-        if x.idle { parts.append(x.quietFor > 600 ? "خاملة منذ \(fmtDuration(x.quietFor))" : "خاملة") }
-        if model.guardStatus.exempt.contains(x.id) { parts.append("مستثناة من الإيقاف") }
-        if x.calm { parts.append("أولوية خلفية (بطيئة)") }
-        return parts.joined(separator: " · ")
-    }
-
-    // MARK: Top consumers
-
-    private func topSection(_ p: ProcReport) -> some View {
-        let rows: [ProcGroup]
-        switch tab {
-        case 1: rows = Array(p.groups.sorted { $0.mem > $1.mem }.prefix(5))
-        case 2: rows = Array(p.groups.filter { ProcessScanner.devServices.contains($0.name) }
-                .sorted { ($0.cpu, Double($0.mem)) > ($1.cpu, Double($1.mem)) }.prefix(5))
-        default: rows = Array(p.groups.sorted { $0.cpu > $1.cpu }.prefix(5))
-        }
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                sectionTitle("الأكثر استهلاكًا")
-                Spacer()
-                Text("\(p.total) عملية").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            Picker("", selection: $tab) {
-                Text("المعالج").tag(0)
-                Text("الذاكرة").tag(1)
-                Text("خدمات الخلفية").tag(2)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-            ForEach(rows) { g in
-                HStack(spacing: 0) {
-                    Text(ltr(g.name + (g.pids.count > 1 ? " ×\(g.pids.count)" : ""))).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    numbers(cpu: g.cpu, mem: g.mem)
-                    if g.mine, !ProcessScanner.protected.contains(g.name), g.name != "Claude Code" {
-                        RowActions(calm: g.calm, onCalm: { model.toggleCalm(g.pids, isCalm: g.calm) }, onKill: {
-                            model.confirmKill(g.name, detail: "سيُرسل طلب إنهاء إلى \(g.pids.count) عملية. احفظ عملك فيها أولًا.", pids: g.pids)
-                        })
-                    } else {
-                        Spacer().frame(width: 40)
-                    }
-                }
-            }
-            if rows.isEmpty { Text("لا توجد خدمات تعمل").font(.system(size: 11)).foregroundStyle(.secondary) }
-        }
-    }
-
-    // MARK: Guard
-
-    private var guardSection: some View {
+    private var guardCard: some View {
         let g = model.guardStatus
         let limit = model.guardLimit
         let waiting = g.paused.count
@@ -1926,46 +1839,194 @@ struct PopoverView: View {
         } else if waiting > 0 {
             status = "\(waiting) جلسة متوقفة مؤقتًا. تُكمل تلقائيًا عند نزول المعالج تحت \(ltr("\(limit - Int(Guard.margin))%"))، أو بعد 5 دقائق كحد أقصى."
         } else {
-            status = "المعالج الآن \(ltr(fmtPct(model.snap.cpuTotal))). إذا بقي عند \(ltr("\(limit)%")) أو أكثر 12 ثانية تتوقف أثقل جلسة مؤقتًا."
+            status = "إذا بقي المعالج عند \(ltr("\(limit)%")) أو أكثر 12 ثانية، تتوقف أثقل جلسة \(ltr("Claude Code")) مؤقتًا وتُكمل حين يهدأ."
         }
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: "shield.lefthalf.filled").font(.system(size: 10)).foregroundStyle(limit > 0 ? Color.green : Color.secondary)
-                sectionTitle("الحارس: أوقف أثقل جلسة مؤقتًا إذا وصل المعالج إلى")
+        return Card {
+            HStack(spacing: 6) {
+                Image(systemName: limit > 0 ? "shield.lefthalf.filled" : "shield.slash")
+                    .foregroundStyle(limit > 0 ? Color.green : Color.secondary)
+                    .accessibilityHidden(true)
+                Text("الحارس").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Picker("الحد", selection: $model.guardLimit) {
+                    Text("مطفأ").tag(0)
+                    ForEach(model.limitChoices, id: \.self) { Text(ltr("\($0)%")).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
             }
-            Picker("", selection: $model.guardLimit) {
-                Text("مطفأ").tag(0)
-                ForEach(model.limitChoices, id: \.self) { Text(ltr("\($0)%")).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-            HStack(alignment: .top, spacing: 8) {
-                Text(rtl(status)).font(.system(size: 10)).foregroundStyle(waiting > 0 ? Color.orange : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                if waiting > 0 {
-                    Button("أكمل الكل إجباريًا") { model.forceContinue(nil) }.controlSize(.small)
+            Text(rtl(status)).font(.system(size: 11)).foregroundStyle(waiting > 0 ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if waiting > 0 {
+                HStack {
+                    Button("عرض الجلسات") { section = 1 }.controlSize(.small)
+                    Button("أكمل الكل إجباريًا") { model.forceContinue(nil) }.controlSize(.small).keyboardShortcut(.defaultAction)
+                    Spacer()
                 }
             }
         }
     }
 
-    // MARK: Footer
+    // MARK: Sessions
 
-    private var footer: some View {
-        HStack(spacing: 12) {
-            Toggle("عرض مختصر", isOn: $model.compact)
-            Toggle("تشغيل مع الجهاز", isOn: Binding(get: { model.loginItem }, set: { model.setLoginItem($0) }))
-            Spacer()
-            Button("مراقب النشاط") {
-                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
-            }
-            Button("إغلاق نبض") { NSApp.terminate(nil) }
+    private func numbers(cpu: Double, mem: UInt64) -> some View {
+        HStack(spacing: 0) {
+            Text(ltr(fmtPct(cpu))).frame(width: 46, alignment: .trailing)
+            Text(ltr(fmtBytes(mem))).frame(width: 60, alignment: .trailing)
         }
-        .toggleStyle(.checkbox)
-        .controlSize(.small)
         .font(.system(size: 11))
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+    }
+
+    private func columnHeader(_ title: String) -> some View {
+        HStack(spacing: 0) {
+            sectionTitle(title)
+            Spacer()
+            Text("معالج").frame(width: 46, alignment: .trailing)
+            Text("ذاكرة").frame(width: 60, alignment: .trailing)
+            Spacer().frame(width: 50)
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
+    }
+
+    @ViewBuilder private func sessionsSection(_ s: Snapshot) -> some View {
+        if let p = s.procs {
+            VStack(alignment: .leading, spacing: 4) {
+                columnHeader(rtl("\(p.sessions.count) جلسات · \(p.mcpCount) خادم \(ltr("MCP"))"))
+                if p.sessions.isEmpty {
+                    Text("لا توجد جلسات Claude Code تعمل").font(.system(size: 12)).foregroundStyle(.secondary).padding(6)
+                }
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(p.sessions.sorted { $0.elapsed < $1.elapsed }) { x in sessionRow(x) }
+                    }
+                }
+                .frame(maxHeight: 330)
+                .fixedSize(horizontal: false, vertical: p.sessions.count <= 7)
+                if let d = p.desktop {
+                    Divider().padding(.vertical, 4)
+                    HStack(spacing: 0) {
+                        HStack(spacing: 8) {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: "/Applications/Claude.app"))
+                                .resizable().frame(width: 16, height: 16).accessibilityHidden(true)
+                            Text("تطبيق Claude · \(d.pids.count) عملية").font(.system(size: 12))
+                        }
+                        Spacer(minLength: 4)
+                        numbers(cpu: d.cpu, mem: d.mem)
+                        Spacer().frame(width: 50)
+                    }
+                    .padding(.horizontal, 6)
+                }
+            }
+        } else {
+            ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding()
+        }
+    }
+
+    private func sessionRow(_ x: ClaudeSession) -> some View {
+        let pause = model.guardStatus.paused.first { $0.root == x.id }
+        return HStack(spacing: 8) {
+            Image(systemName: pause != nil ? "pause.circle.fill" : (x.idle ? "moon.zzz.fill" : "terminal.fill"))
+                .font(.system(size: 13))
+                .foregroundStyle(pause != nil ? Color.orange : (x.idle ? Color.secondary : Color.accentColor))
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(ltr(x.label)).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                Text(rtl(subtitle(x, pause: pause))).font(.system(size: 10))
+                    .foregroundStyle(pause != nil ? Color.orange : Color.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            numbers(cpu: x.cpu, mem: x.mem)
+            HStack(spacing: 2) {
+                if pause != nil {
+                    IconButton(symbol: "play.fill", label: "أكمل إجباريًا (لا تُوقف مجددًا لمدة 15 دقيقة)", tint: .green) { model.forceContinue(x.id) }
+                } else {
+                    IconButton(symbol: "pause.fill", label: "أوقف مهام هذه الجلسة مؤقتًا حتى أكملها بنفسي") { model.pause(x.id) }
+                }
+                IconButton(symbol: "xmark", label: "إنهاء الجلسة") {
+                    model.confirmKill("جلسة Claude Code «\(x.label)»",
+                                      detail: "ستُغلق الجلسة مع \(x.pids.count - 1) عملية تابعة لها. المحادثة محفوظة ويمكن استئنافها لاحقًا.",
+                                      pids: x.pids)
+                }
+            }
+            .frame(width: 50, alignment: .trailing)
+        }
+        .modifier(HoverRow())
+    }
+
+    private func subtitle(_ x: ClaudeSession, pause: Guard.Paused?) -> String {
+        if let pause {
+            let waited = max(0, Int(Date().timeIntervalSince(pause.since)))
+            let since = waited < 60 ? "\(waited)ث" : fmtDuration(TimeInterval(waited))
+            if pause.manual { return "أوقفتَها أنت منذ \(since) · تنتظر زر الإكمال" }
+            return "متوقفة مؤقتًا منذ \(since) · " + (pause.hot ? "حتى يبرد الجهاز" : "حتى يهدأ المعالج")
+        }
+        var parts = ["منذ \(fmtDuration(x.elapsed))", ltr("MCP \(x.mcpCount)")]
+        if let top = x.topName { parts.append("الأثقل \(ltr("\(top) \(fmtPct(x.topCPU))"))") }
+        if x.idle { parts.append(x.quietFor > 600 ? "خاملة منذ \(fmtDuration(x.quietFor))" : "خاملة") }
+        if model.guardStatus.exempt.contains(x.id) { parts.append("مستثناة من الإيقاف") }
+        if x.calm { parts.append("أولوية خلفية (بطيئة)") }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: Processes
+
+    @ViewBuilder private func processesSection(_ s: Snapshot) -> some View {
+        if let p = s.procs {
+            let rows: [ProcGroup] = {
+                switch tab {
+                case 1: return Array(p.groups.sorted { $0.mem > $1.mem }.prefix(8))
+                case 2: return Array(p.groups.filter { ProcessScanner.devServices.contains($0.name) }
+                        .sorted { ($0.cpu, Double($0.mem)) > ($1.cpu, Double($1.mem)) }.prefix(8))
+                default: return Array(p.groups.sorted { $0.cpu > $1.cpu }.prefix(8))
+                }
+            }()
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Picker("", selection: $tab) {
+                        Text("المعالج").tag(0)
+                        Text("الذاكرة").tag(1)
+                        Text("خدمات الخلفية").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    Spacer()
+                    Text("\(p.total) عملية").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                columnHeader("البرنامج")
+                ForEach(rows) { g in
+                    HStack(spacing: 8) {
+                        Text(ltr(g.name + (g.pids.count > 1 ? " ×\(g.pids.count)" : ""))).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                        if g.calm { Image(systemName: "leaf.fill").font(.system(size: 9)).foregroundStyle(.green).accessibilityLabel("أولوية خلفية") }
+                        Spacer(minLength: 4)
+                        numbers(cpu: g.cpu, mem: g.mem)
+                        HStack(spacing: 2) {
+                            if g.mine, !ProcessScanner.protected.contains(g.name), g.name != "Claude Code" {
+                                IconButton(symbol: g.calm ? "leaf.fill" : "leaf", label: g.calm ? "أعد السرعة الكاملة" : "هدّئ: انقلها إلى أنوية الكفاءة (أبرد وأبطأ)",
+                                           tint: g.calm ? .green : .secondary) { model.toggleCalm(g.pids, isCalm: g.calm) }
+                                IconButton(symbol: "xmark", label: "إنهاء") {
+                                    model.confirmKill(g.name, detail: "سيُرسل طلب إنهاء إلى \(g.pids.count) عملية. احفظ عملك فيها أولًا.", pids: g.pids)
+                                }
+                            }
+                        }
+                        .frame(width: 50, alignment: .trailing)
+                    }
+                    .modifier(HoverRow())
+                }
+                if rows.isEmpty { Text("لا توجد خدمات تعمل").font(.system(size: 11)).foregroundStyle(.secondary).padding(6) }
+                Text(rtl("المعالج: \(ltr("100%")) = نواة واحدة كاملة")).font(.system(size: 9)).foregroundStyle(.tertiary).padding(.horizontal, 6)
+            }
+        } else {
+            ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding()
+        }
     }
 }
 
@@ -2100,8 +2161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         var attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         // Leave the default color alone when all is well so the text follows the menu bar's own appearance.
         if s.level != .ok || paused > 0 { attributes[.foregroundColor] = s.level == .crit ? NSColor.systemRed : NSColor.systemOrange }
-        let mark = paused > 0 ? " ⏸\(paused) " : " "
-        button.attributedTitle = NSAttributedString(string: mark + CLI.line(s, compact: model.compact), attributes: attributes)
+        button.image = NSImage(systemSymbolName: paused > 0 ? "pause.circle.fill" : "waveform.path.ecg",
+                               accessibilityDescription: paused > 0 ? "Nabd: \(paused) paused" : "Nabd")
+        button.attributedTitle = NSAttributedString(string: " " + CLI.line(s, compact: model.compact), attributes: attributes)
     }
 
     // MARK: Notifications
@@ -2239,7 +2301,7 @@ enum Main {
 extension PopoverView {
     init(model: Model, initialTab: Int) {
         self.model = model
-        _tab = State(initialValue: initialTab)
+        _section = State(initialValue: initialTab)
     }
 }
 
