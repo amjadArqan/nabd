@@ -2,9 +2,9 @@
 
 # Nabd
 
-**Your Mac's pulse in the menu bar — and a guard that keeps heavy Claude Code sessions from cooking it.**
+**Your Mac's pulse in the menu bar — and a guard that keeps heavy Claude Code and Codex sessions from cooking it.**
 
-Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code sessions
+Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code & Codex sessions
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)
 ![Universal](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-blue)
@@ -17,7 +17,7 @@ Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code s
 
 </div>
 
-<p align="center"><img src="docs/window.png" width="780" alt="Nabd's desktop window: a sidebar with Overview, CPU and GPU, Memory, Network, Disk, Power and Battery, Sensors, Claude Code and Clean Up; the overview shows rings, power, the guard and suggestions"></p>
+<p align="center"><img src="docs/window.png" width="780" alt="Nabd's desktop window: a sidebar with Overview, CPU and GPU, Memory, Network, Disk, Power and Battery, Sensors, AI Agents and Clean Up; the overview shows rings, power, the guard and suggestions"></p>
 
 ## Features
 
@@ -28,12 +28,12 @@ Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code s
 | **Network & disk** | Live download/upload and disk read/write speeds, free storage. |
 | **Power** | Watts from the wall, split into the Mac itself, battery charging and charger loss; charger rating, peak, energy used today; battery health and cycle count. |
 | **History** | Charts of the last 30 minutes: CPU and GPU, temperature, memory, power, network. |
-| **Claude Code** | Every session by project folder with its CPU, memory, MCP servers and heaviest process; idle and orphaned ones are flagged. |
+| **AI agents** | Every Claude Code and Codex session (Codex in the ChatGPT app or the `codex` CLI) by project folder, with its CPU, memory, MCP servers and heaviest process; idle and orphaned ones are flagged. |
 | **Top consumers** | By CPU, by memory, or background dev services (php, node, mysqld, nginx, redis, VMs…), with *calm* and *quit* buttons. |
 | **Suggestions** | Plain-language hints: fans at full speed, swap too high, disk almost full, idle sessions, a charger too weak for the load… |
-| **Guard** | Pauses the heaviest Claude Code session when the CPU stays at your limit, then lets it continue. |
+| **Guard** | Pauses the heaviest Claude Code or Codex session when the CPU stays at your limit, then lets it continue. |
 | **Your menu bar** | Choose what shows next to the icon: temperature, CPU, GPU, memory, network, power — or just the icon. |
-| **Desktop window** | A full window with a sidebar: per-core CPU bars, where memory goes, large 30-minute charts, every temperature sensor and fan, Claude Code sessions with the guard log. |
+| **Desktop window** | A full window with a sidebar: per-core CPU bars, where memory goes, large 30-minute charts, every temperature sensor and fan, Claude Code and Codex sessions with the guard log. |
 | **Clean Up** | Frees space from developer caches — npm, Yarn, pnpm, Homebrew, Composer, uv, pip, Xcode — using each tool's own clean command, and moves other cache folders to the Trash so they can be put back. |
 | **10 languages** | English, العربية, Deutsch, Español, Français, 日本語, 한국어, Português (Brasil), Русский, 简体中文 — follows your Mac's language, right-to-left included. |
 | **Updates** | Checks GitHub once a day and shows a small *Update* button when a new version is out (can be turned off). |
@@ -53,8 +53,8 @@ own commands. You confirm before anything happens.
 ## The guard
 
 When the whole machine stays at or above the limit (80 / **90** / 95%, or off) for about 12 seconds, Nabd pauses
-the session whose jobs burn the most CPU — the tests, builds and analysis its Bash commands started. The `claude`
-process and its MCP servers are never touched, so the agent itself stays responsive.
+the Claude Code or Codex session whose jobs burn the most CPU — the tests, builds and analysis its commands started. The
+`claude` and `codex` processes and their MCP servers are never touched, so the agent itself stays responsive.
 
 <p align="center"><img src="docs/alert.png" width="380" alt="Nabd alert: a session was paused, with a Force Continue button"></p>
 

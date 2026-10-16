@@ -70,8 +70,8 @@
 "Using %@ for %@ (PID %@). If it isn't intended work, quit it." = "已持续 %2$@ 占用 %1$@（PID %3$@）。如果不是预期中的任务，请将其退出。";
 "Orphaned MCP servers (%@)" = "孤立的 MCP 服务器（%@）";
 "Still running after their session closed, holding %@." = "其会话关闭后仍在运行，占用 %@。";
-"1 idle Claude Code session" = "1 个空闲的 Claude Code 会话";
-"%@ idle Claude Code sessions" = "%@ 个空闲的 Claude Code 会话";
+"1 idle AI session" = "1 个空闲的 AI 会话";
+"%@ idle AI sessions" = "%@ 个空闲的 AI 会话";
 "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕." = "占用 %@，MCP 服务器：%@ — %@。可在 Claude App 中将其归档，或用 ✕ 退出。";
 "%@ MCP servers running (%@)" = "%@ 个 MCP 服务器正在运行（%@）";
 "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter." = "每个会话都会为每个服务器运行独立副本。关闭不用的服务器可让会话更轻量。";
@@ -82,6 +82,7 @@
 "Spotlight is indexing" = "Spotlight 正在索引";
 "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight." = "通常是暂时的。如果持续出现，请在系统设置 → Spotlight 中排除项目文件夹。";
 "All good" = "一切正常";
+"Session" = "会话";
 "Quit %@?" = "要退出 %@ 吗？";
 "Quit" = "退出";
 "Battery %@" = "电池 %@";
@@ -100,7 +101,7 @@
 "Off. Sessions you paused: %@." = "已关闭。你暂停的会话：%@。";
 "Off: nothing is paused automatically." = "已关闭：不会自动暂停任何会话。";
 "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most." = "已暂停的会话：%@。CPU 降到 %@ 以下时继续，最多 5 分钟后继续。";
-"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down." = "如果 CPU 连续 12 秒保持在 %@ 或以上，负载最重的 Claude Code 会话会暂停，直到恢复平稳。";
+"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down." = "如果 CPU 持续 12 秒保持在 %@ 或以上，最重的 Claude Code 或 Codex 会话会暂停，直到负载回落。";
 "Guard" = "守护";
 "Limit" = "上限";
 "Off" = "关闭";
@@ -140,12 +141,12 @@
 "Free" = "可用";
 "Total" = "总计";
 "Sessions: %@ · MCP servers: %@" = "会话：%@ · MCP 服务器：%@";
-"No Claude Code sessions running" = "没有正在运行的 Claude Code 会话";
+"No Claude Code or Codex sessions running" = "没有正在运行的 Claude Code 或 Codex 会话";
 "Claude app · %@ processes" = "Claude App · %@ 个进程";
 "Force continue (won't pause again for 15 minutes)" = "强制继续（15 分钟内不会再暂停）";
 "Pause this session's work until you continue it" = "暂停此会话的工作，直到你手动继续";
 "Quit session" = "退出会话";
-"Claude Code session “%@”" = "Claude Code 会话“%@”";
+"%@ session “%@”" = "%@ 会话“%@”";
 "The session closes along with the processes it started (%@). The conversation is saved and can be resumed." = "该会话及其启动的进程（%@）将被关闭。对话已保存，可以恢复。";
 "%@ s" = "%@ 秒";
 "Paused by you %@ ago · waiting for you to continue" = "你在 %@前暂停 · 等待你继续";
@@ -172,7 +173,7 @@
 "Last 30 minutes · network in MB/s" = "最近 30 分钟 · 网络（MB/s）";
 "Power and Battery" = "电源与电池";
 "Sensors" = "传感器";
-"Claude Code" = "Claude Code";
+"AI Agents" = "AI 智能体";
 "Clean Up" = "清理";
 "Tools" = "工具";
 "%@ free" = "可用 %@";

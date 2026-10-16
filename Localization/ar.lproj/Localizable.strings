@@ -70,8 +70,8 @@
 "Using %@ for %@ (PID %@). If it isn't intended work, quit it." = "تستهلك %@ منذ %@ (PID %@). إن لم تكن مهمة مقصودة فأنهِها.";
 "Orphaned MCP servers (%@)" = "خوادم MCP يتيمة (%@)";
 "Still running after their session closed, holding %@." = "بقيت تعمل بعد إغلاق جلستها، وتحجز %@.";
-"1 idle Claude Code session" = "جلسة Claude Code واحدة خاملة";
-"%@ idle Claude Code sessions" = "%@ جلسات Claude Code خاملة";
+"1 idle AI session" = "جلسة ذكاء اصطناعي واحدة خاملة";
+"%@ idle AI sessions" = "%@ جلسات ذكاء اصطناعي خاملة";
 "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕." = "تحجز %@، وخوادم MCP: %@ — %@. أرشِفها من تطبيق Claude أو أنهِها بزر ✕.";
 "%@ MCP servers running (%@)" = "%@ خادم MCP يعمل (%@)";
 "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter." = "كل جلسة تشغّل نسختها الخاصة من كل خادم. عطّل الخوادم التي لا تستعملها لتخفّ الجلسات.";
@@ -82,6 +82,7 @@
 "Spotlight is indexing" = "Spotlight يفهرس الملفات";
 "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight." = "مؤقت عادةً. إن تكرر، استثنِ مجلدات المشاريع في إعدادات النظام ← Spotlight.";
 "All good" = "كل شيء طبيعي";
+"Session" = "جلسة";
 "Quit %@?" = "إنهاء %@؟";
 "Quit" = "إنهاء";
 "Battery %@" = "البطارية %@";
@@ -100,7 +101,7 @@
 "Off. Sessions you paused: %@." = "مطفأ. جلسات أوقفتَها أنت: %@.";
 "Off: nothing is paused automatically." = "مطفأ: لا إيقاف تلقائي.";
 "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most." = "جلسات متوقفة مؤقتًا: %@. تُكمل عند نزول المعالج تحت %@، أو بعد 5 دقائق كحد أقصى.";
-"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down." = "إذا بقي المعالج عند %@ أو أكثر 12 ثانية، تتوقف أثقل جلسة Claude Code مؤقتًا حتى يهدأ.";
+"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down." = "إذا بقي المعالج عند %@ أو أكثر 12 ثانية، تتوقف أثقل جلسة Claude Code أو Codex مؤقتًا حتى يهدأ.";
 "Guard" = "الحارس";
 "Limit" = "الحد";
 "Off" = "مطفأ";
@@ -140,12 +141,12 @@
 "Free" = "المتاح";
 "Total" = "الإجمالي";
 "Sessions: %@ · MCP servers: %@" = "الجلسات: %@ · خوادم MCP: %@";
-"No Claude Code sessions running" = "لا توجد جلسات Claude Code تعمل";
+"No Claude Code or Codex sessions running" = "لا توجد جلسات Claude Code أو Codex تعمل";
 "Claude app · %@ processes" = "تطبيق Claude · %@ عملية";
 "Force continue (won't pause again for 15 minutes)" = "أكمل إجباريًا (لا تُوقف مجددًا لمدة 15 دقيقة)";
 "Pause this session's work until you continue it" = "أوقف مهام هذه الجلسة مؤقتًا حتى تُكملها بنفسك";
 "Quit session" = "إنهاء الجلسة";
-"Claude Code session “%@”" = "جلسة Claude Code «%@»";
+"%@ session “%@”" = "جلسة %1$@ «%2$@»";
 "The session closes along with the processes it started (%@). The conversation is saved and can be resumed." = "ستُغلق الجلسة مع العمليات التي بدأتها (%@). المحادثة محفوظة ويمكن استئنافها لاحقًا.";
 "%@ s" = "%@ ث";
 "Paused by you %@ ago · waiting for you to continue" = "أوقفتَها أنت منذ %@ · تنتظر زر الإكمال";
@@ -172,7 +173,7 @@
 "Last 30 minutes · network in MB/s" = "آخر 30 دقيقة · الشبكة بوحدة MB/s";
 "Power and Battery" = "الكهرباء والبطارية";
 "Sensors" = "الحساسات";
-"Claude Code" = "Claude Code";
+"AI Agents" = "وكلاء الذكاء الاصطناعي";
 "Clean Up" = "التنظيف";
 "Tools" = "الأدوات";
 "%@ free" = "%@ متاح";

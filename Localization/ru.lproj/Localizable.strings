@@ -70,8 +70,8 @@
 "Using %@ for %@ (PID %@). If it isn't intended work, quit it." = "Использует %@ уже %@ (PID %@). Если это не нужная работа, завершите процесс.";
 "Orphaned MCP servers (%@)" = "Брошенные серверы MCP (%@)";
 "Still running after their session closed, holding %@." = "Работают после закрытия своей сессии и занимают %@.";
-"1 idle Claude Code session" = "1 неактивная сессия Claude Code";
-"%@ idle Claude Code sessions" = "Неактивных сессий Claude Code: %@";
+"1 idle AI session" = "1 неактивная сессия ИИ";
+"%@ idle AI sessions" = "Неактивных сессий ИИ: %@";
 "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕." = "Занимают %@, серверов MCP: %@ — %@. Архивируйте их в приложении Claude или завершите кнопкой ✕.";
 "%@ MCP servers running (%@)" = "Работает серверов MCP: %@ (%@)";
 "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter." = "Каждая сессия запускает свою копию каждого сервера. Отключите неиспользуемые, чтобы облегчить сессии.";
@@ -82,6 +82,7 @@
 "Spotlight is indexing" = "Spotlight индексирует";
 "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight." = "Обычно это временно. Если повторяется, исключите папки проектов в разделе Системные настройки → Spotlight.";
 "All good" = "Всё в порядке";
+"Session" = "Сессия";
 "Quit %@?" = "Завершить %@?";
 "Quit" = "Завершить";
 "Battery %@" = "Аккумулятор %@";
@@ -100,7 +101,7 @@
 "Off. Sessions you paused: %@." = "Выключена. Приостановлено вами сессий: %@.";
 "Off: nothing is paused automatically." = "Выключена: ничего не приостанавливается автоматически.";
 "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most." = "Приостановлено сессий: %@. Они продолжат работу, когда загрузка ЦП опустится ниже %@, или максимум через 5 минут.";
-"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down." = "Если загрузка ЦП держится на уровне %@ или выше 12 секунд, самая тяжёлая сессия Claude Code приостанавливается, пока всё не успокоится.";
+"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down." = "Если ЦП держится на %@ или выше 12 секунд, самая тяжёлая сессия Claude Code или Codex приостанавливается, пока нагрузка не спадёт.";
 "Guard" = "Защита";
 "Limit" = "Лимит";
 "Off" = "Выкл.";
@@ -140,12 +141,12 @@
 "Free" = "Свободно";
 "Total" = "Всего";
 "Sessions: %@ · MCP servers: %@" = "Сессий: %@ · серверов MCP: %@";
-"No Claude Code sessions running" = "Нет запущенных сессий Claude Code";
+"No Claude Code or Codex sessions running" = "Нет активных сессий Claude Code или Codex";
 "Claude app · %@ processes" = "Приложение Claude · процессов: %@";
 "Force continue (won't pause again for 15 minutes)" = "Продолжить принудительно (не будет приостановлена 15 минут)";
 "Pause this session's work until you continue it" = "Приостановить работу этой сессии, пока вы её не продолжите";
 "Quit session" = "Завершить сессию";
-"Claude Code session “%@”" = "Сессия Claude Code “%@”";
+"%@ session “%@”" = "Сессия %@ «%@»";
 "The session closes along with the processes it started (%@). The conversation is saved and can be resumed." = "Сессия закроется вместе с запущенными ею процессами (%@). Диалог сохранится, его можно будет продолжить.";
 "%@ s" = "%@ с";
 "Paused by you %@ ago · waiting for you to continue" = "Приостановлено вами %@ назад · ждёт продолжения";
@@ -172,7 +173,7 @@
 "Last 30 minutes · network in MB/s" = "Последние 30 минут · сеть в МБ/с";
 "Power and Battery" = "Энергия и аккумулятор";
 "Sensors" = "Датчики";
-"Claude Code" = "Claude Code";
+"AI Agents" = "ИИ-агенты";
 "Clean Up" = "Очистка";
 "Tools" = "Инструменты";
 "%@ free" = "Свободно %@";

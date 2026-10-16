@@ -70,8 +70,8 @@
 "Using %@ for %@ (PID %@). If it isn't intended work, quit it." = "Using %@ for %@ (PID %@). If it isn't intended work, quit it.";
 "Orphaned MCP servers (%@)" = "Orphaned MCP servers (%@)";
 "Still running after their session closed, holding %@." = "Still running after their session closed, holding %@.";
-"1 idle Claude Code session" = "1 idle Claude Code session";
-"%@ idle Claude Code sessions" = "%@ idle Claude Code sessions";
+"1 idle AI session" = "1 idle AI session";
+"%@ idle AI sessions" = "%@ idle AI sessions";
 "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕." = "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕.";
 "%@ MCP servers running (%@)" = "%@ MCP servers running (%@)";
 "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter." = "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter.";
@@ -82,6 +82,7 @@
 "Spotlight is indexing" = "Spotlight is indexing";
 "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight." = "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight.";
 "All good" = "All good";
+"Session" = "Session";
 "Quit %@?" = "Quit %@?";
 "Quit" = "Quit";
 "Battery %@" = "Battery %@";
@@ -100,7 +101,7 @@
 "Off. Sessions you paused: %@." = "Off. Sessions you paused: %@.";
 "Off: nothing is paused automatically." = "Off: nothing is paused automatically.";
 "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most." = "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most.";
-"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down." = "If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down.";
+"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down." = "If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down.";
 "Guard" = "Guard";
 "Limit" = "Limit";
 "Off" = "Off";
@@ -140,12 +141,12 @@
 "Free" = "Free";
 "Total" = "Total";
 "Sessions: %@ · MCP servers: %@" = "Sessions: %@ · MCP servers: %@";
-"No Claude Code sessions running" = "No Claude Code sessions running";
+"No Claude Code or Codex sessions running" = "No Claude Code or Codex sessions running";
 "Claude app · %@ processes" = "Claude app · %@ processes";
 "Force continue (won't pause again for 15 minutes)" = "Force continue (won't pause again for 15 minutes)";
 "Pause this session's work until you continue it" = "Pause this session's work until you continue it";
 "Quit session" = "Quit session";
-"Claude Code session “%@”" = "Claude Code session “%@”";
+"%@ session “%@”" = "%@ session “%@”";
 "The session closes along with the processes it started (%@). The conversation is saved and can be resumed." = "The session closes along with the processes it started (%@). The conversation is saved and can be resumed.";
 "%@ s" = "%@ s";
 "Paused by you %@ ago · waiting for you to continue" = "Paused by you %@ ago · waiting for you to continue";
@@ -172,7 +173,7 @@
 "Last 30 minutes · network in MB/s" = "Last 30 minutes · network in MB/s";
 "Power and Battery" = "Power and Battery";
 "Sensors" = "Sensors";
-"Claude Code" = "Claude Code";
+"AI Agents" = "AI Agents";
 "Clean Up" = "Clean Up";
 "Tools" = "Tools";
 "%@ free" = "%@ free";

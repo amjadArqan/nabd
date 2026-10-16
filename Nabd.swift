@@ -1,5 +1,5 @@
 // Nabd — a light menu bar monitor for temperature, CPU, GPU, memory, network, disk and power on macOS,
-// with a focus on Claude Code sessions and background dev services. English is the base language;
+// with a focus on AI coding agents (Claude Code, Codex) and background dev services. English is the base language;
 // translations live in Localization/<language>.lproj/Localizable.strings.
 //
 // Build: ./build.sh      GUI: open Nabd.app      CLI: ./nabd status | doctor | json | line
@@ -201,8 +201,18 @@ struct ProcGroup: Identifiable {
     var calm = true
 }
 
-struct ClaudeSession: Identifiable {
+/// The AI coding agents Nabd recognizes. Each runs shell commands as child processes of one long-lived process.
+enum AgentKind: String {
+    case claude, codex
+    var title: String { self == .claude ? "Claude Code" : "Codex" }
+    var symbol: String { self == .claude ? "terminal.fill" : "chevron.left.forwardslash.chevron.right" }
+    /// Process names of the agents themselves (never paused; their commands are).
+    static let processNames: Set<String> = ["claude", "codex"]
+}
+
+struct AgentSession: Identifiable {
     let id: Int32
+    var kind = AgentKind.claude
     var label: String
     var cwd: String
     var elapsed: TimeInterval
@@ -220,7 +230,7 @@ struct ClaudeSession: Identifiable {
 struct ProcReport {
     var total = 0
     var groups: [ProcGroup] = []
-    var sessions: [ClaudeSession] = []
+    var sessions: [AgentSession] = []
     var mcpCount = 0
     var mcpMem: UInt64 = 0
     var orphanMCP: [Proc] = []
@@ -524,7 +534,8 @@ final class Cleaner: ObservableObject {
                                (path("Library/Caches"), L("An app's cache. Quit the app before cleaning it."))] {
             let children = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
             for child in children where !listed.contains(child.path) && !child.lastPathComponent.hasPrefix(".")
-                && !child.lastPathComponent.localizedCaseInsensitiveContains("claude") && !Cleaner.looksLikeProject(child) {
+                && !child.lastPathComponent.localizedCaseInsensitiveContains("claude") && !child.lastPathComponent.localizedCaseInsensitiveContains("codex")
+                && !Cleaner.looksLikeProject(child) {
                 list.append(CleanItem(id: child.path, title: child.lastPathComponent, detail: detail, symbol: "folder", paths: [child], selected: false))
             }
         }
@@ -627,7 +638,7 @@ final class Cleaner: ObservableObject {
     }
 }
 
-// MARK: - Guard (pauses the heaviest Claude Code session while the CPU is saturated)
+// MARK: - Guard (pauses the heaviest AI agent session while the CPU is saturated)
 
 /// Sessions run at full speed until the whole machine has stayed at the limit for a few looks in a row. Then the
 /// session whose jobs burn the most CPU is paused: SIGSTOP on its busy job processes, never on `claude` itself
@@ -655,6 +666,7 @@ final class Guard {
     }
     struct Event {
         let date: Date, root: Int32, what: String
+        var agent = ""  // process name, for a label when the session is too new to have one yet
     }
 
     static let interval = 3.0                   // seconds between looks
@@ -723,6 +735,37 @@ final class Guard {
             $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
         }
         return r == 0 ? UInt64(Double(info.ri_user_time + info.ri_system_time) * nanosPerTick) : nil
+    }
+
+    /// argv of one of our processes (KERN_PROCARGS2), without the environment.
+    private func arguments(_ pid: Int32) -> [String] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return [] }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return [] }
+        let argc = Int(buffer.withUnsafeBytes { $0.load(as: Int32.self) })
+        var index = MemoryLayout<Int32>.size
+        while index < size, buffer[index] != 0 { index += 1 }  // executable path
+        while index < size, buffer[index] == 0 { index += 1 }  // padding
+        var args: [String] = []
+        while args.count < argc, index < size {
+            let start = index
+            while index < size, buffer[index] != 0 { index += 1 }
+            args.append(String(decoding: buffer[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return args
+    }
+
+    /// A direct child of an agent that runs work rather than serving the agent. Claude Code always starts commands
+    /// through a shell. Codex hands simple commands to a shell that replaces itself with the command, so its children
+    /// are the tools themselves; only MCP servers and Codex's own helpers are left alone.
+    private func isJob(_ pid: Int32, of agent: String, procs: [Int32: Info]) -> Bool {
+        guard let name = procs[pid]?.name else { return false }
+        if Guard.shells.contains(name) || name == "sandbox-exec" { return true }
+        guard agent == "codex", !name.hasPrefix("codex"), !AgentKind.processNames.contains(name) else { return false }
+        return !arguments(pid).contains { $0.range(of: "mcp", options: .caseInsensitive) != nil }
     }
 
     /// Whole-machine CPU use since the previous look.
@@ -818,7 +861,7 @@ final class Guard {
         func isRoot(_ pid: Int32) -> Bool {
             var current = procs[pid]?.ppid ?? 0, hops = 0
             while current > 1, hops < 32, let parent = procs[current] {
-                if parent.name == "claude" { return false }
+                if AgentKind.processNames.contains(parent.name) { return false }
                 current = parent.ppid
                 hops += 1
             }
@@ -829,12 +872,12 @@ final class Guard {
         // as well, but they are not shells, and freezing one would hang the agent's tool calls.
         jobs.removeAll()
         var seen = Set<Int32>()
-        for (root, info) in procs where info.name == "claude" && isRoot(root) {
+        for (root, info) in procs where AgentKind.processNames.contains(info.name) && isRoot(root) {
             var list: [(pid: Int32, cores: Double)] = []
-            var queue = (children[root] ?? []).filter { Guard.shells.contains(procs[$0]?.name ?? "") }
+            var queue = (children[root] ?? []).filter { isJob($0, of: info.name, procs: procs) }
             while let pid = queue.popLast() {
                 queue.append(contentsOf: children[pid] ?? [])
-                guard procs[pid]?.name != "claude", let used = cpuNanos(pid) else { continue }
+                guard !AgentKind.processNames.contains(procs[pid]?.name ?? ""), let used = cpuNanos(pid) else { continue }
                 seen.insert(pid)
                 let previous = lastCPU[pid]
                 lastCPU[pid] = used
@@ -877,7 +920,8 @@ final class Guard {
                     pressure = 0
                     let reason = cpu < limit ? L("the Mac is hot") : L("CPU at %@ with the limit at %@", "\(Int(cpu.rounded()))%", "\(input.limit)%")
                     let cores = String(format: "%.1f", heaviest.value)
-                    events.append(Event(date: now, root: heaviest.key, what: L("Paused: %@; it was the heaviest (%@ cores)", reason, cores)))
+                    events.append(Event(date: now, root: heaviest.key, what: L("Paused: %@; it was the heaviest (%@ cores)", reason, cores),
+                                        agent: procs[heaviest.key]?.name ?? ""))
                 }
             }
 
@@ -931,7 +975,7 @@ enum ProcessScanner {
     ]
     static let protected: Set<String> = ["kernel_task", "launchd", "WindowServer", "loginwindow", "Claude", "Nabd", "Finder", "Dock"]
     private static let aliases = [
-        "claude": "Claude Code", "com.apple.Virtualization.Virtua": "Virtual Machine",  // proc_name truncates at 31 chars
+        "claude": "Claude Code", "codex": "Codex", "com.apple.Virtualization.Virtua": "Virtual Machine",  // proc_name truncates at 31 chars
         "mds": "Spotlight", "mds_stores": "Spotlight", "mdworker_shared": "Spotlight", "mdworker": "Spotlight",
         "corespotlightd": "Spotlight", "spotlightknowledged": "Spotlight", "spotlightknowledged.updater": "Spotlight",
     ]
@@ -1002,12 +1046,17 @@ enum ProcessScanner {
         return aliases[name] ?? name
     }
 
-    static func isClaudeCode(_ p: Proc) -> Bool {
-        (p.name == "claude" || p.path.contains("/claude/versions/")) && !p.command.contains("--chrome-native-host")
+    /// Claude Code (`claude`, also the desktop app's bundled copy) or Codex (`codex`, also inside the ChatGPT app).
+    static func agentKind(_ p: Proc) -> AgentKind? {
+        if (p.name == "claude" || p.path.contains("/claude/versions/")) && !p.command.contains("--chrome-native-host") { return .claude }
+        if p.name == "codex" || p.path.hasSuffix("/codex-cli/bin/codex") { return .codex }
+        return nil
     }
 
+    static func isAgent(_ p: Proc) -> Bool { agentKind(p) != nil }
+
     private static func isMCP(_ p: Proc) -> Bool {
-        !isClaudeCode(p) && !p.name.hasPrefix("Claude") && !shells.contains(p.name)
+        !isAgent(p) && !p.name.hasPrefix("Claude") && !p.name.hasPrefix("codex-") && !shells.contains(p.name)
             && p.command.range(of: "mcp", options: .caseInsensitive) != nil
     }
 
@@ -1030,7 +1079,7 @@ enum ProcessScanner {
         func hasClaudeAncestor(_ p: Proc) -> Bool {
             var cur = p.ppid, hops = 0
             while cur > 1, hops < 32, let parent = byPid[cur] {
-                if isClaudeCode(parent) { return true }
+                if isAgent(parent) { return true }
                 cur = parent.ppid
                 hops += 1
             }
@@ -1051,17 +1100,19 @@ enum ProcessScanner {
         }
         report.groups = Array(groups.values)
 
-        // Claude Code sessions: each top-level `claude` process plus everything it spawned.
+        // Agent sessions: each top-level `claude` or `codex` process plus everything it spawned.
         var inSession = Set<Int32>()
-        for root in procs where isClaudeCode(root) && !hasClaudeAncestor(root) {
+        for root in procs where isAgent(root) && !hasClaudeAncestor(root) {
             let kids = descendants(of: root.pid)
             let all = [root] + kids
             all.forEach { inSession.insert($0.pid) }
             let dir = cwd(root.pid) ?? ""
-            let label = dir.contains("/scratch-workspaces/") ? L("No folder") : (dir.split(separator: "/").last.map(String.init) ?? "claude")
+            let kind = agentKind(root) ?? .claude
+            let folder = dir.split(separator: "/").last.map(String.init)
+            let label = dir.contains("/scratch-workspaces/") ? L("No folder") : (folder ?? kind.title)
             let top = kids.max { $0.cpu < $1.cpu }
             let mcp = kids.filter { isMCP($0) && !(byPid[$0.ppid].map(isMCP) ?? false) }.count
-            var session = ClaudeSession(id: root.pid, label: label, cwd: dir, elapsed: root.elapsed, cpu: all.reduce(0) { $0 + $1.cpu },
+            var session = AgentSession(id: root.pid, kind: kind, label: label, cwd: dir, elapsed: root.elapsed, cpu: all.reduce(0) { $0 + $1.cpu },
                                         mem: all.reduce(0) { $0 + $1.mem }, pids: all.map(\.pid), mcpCount: mcp)
             if let top, top.cpu >= 5 {
                 session.topName = top.name
@@ -1078,7 +1129,7 @@ enum ProcessScanner {
         report.orphanMCP = mcp.filter { $0.ppid == 1 && $0.uid == myUID && !inSession.contains($0.pid) && $0.elapsed > 120 }
         report.runaway = procs.filter {
             $0.uid == myUID && $0.cpu >= 80 && $0.elapsed >= 600 && $0.cpuTime / $0.elapsed >= 0.6
-                && !isClaudeCode($0) && !protected.contains(groupName($0))
+                && !isAgent($0) && !protected.contains(groupName($0))
         }
         return report
     }
@@ -1410,7 +1461,7 @@ enum Advisor {
             let mem = idle.reduce(UInt64(0)) { $0 + $1.mem }
             let names = idle.prefix(3).map { "\(ltr($0.label)) (\(fmtDuration($0.elapsed)))" }.joined(separator: sep)
             out.append(Advice(id: "idle-sessions", level: .ok,
-                              title: idle.count == 1 ? L("1 idle Claude Code session") : L("%@ idle Claude Code sessions", String(idle.count)),
+                              title: idle.count == 1 ? L("1 idle AI session") : L("%@ idle AI sessions", String(idle.count)),
                               detail: L("Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕.",
                                         ltr(fmtBytes(mem)), String(idle.reduce(0) { $0 + $1.mcpCount }), names)))
         }
@@ -1502,10 +1553,10 @@ enum CLI {
         }
 
         guard let p = s.procs else { return }
-        print("\n" + paint("CLAUDE CODE  (\(p.sessions.count) sessions · \(p.mcpCount) MCP servers · \(fmtBytes(p.mcpMem)))", "1"))
+        print("\n" + paint("AI AGENT SESSIONS  (\(p.sessions.count) sessions · \(p.mcpCount) MCP servers · \(fmtBytes(p.mcpMem)))", "1"))
         for x in p.sessions {
             let label = x.cwd.contains("/scratch-workspaces/") ? "(no folder)" : x.label
-            var row = "  " + pad(label, 28) + lpad(fmtDuration(x.elapsed, localized: false), 8) + lpad(fmtPct(x.cpu), 7) + lpad(fmtBytes(x.mem), 9) + "  mcp \(x.mcpCount)"
+            var row = "  " + pad(x.kind.title, 12) + pad(label, 28) + lpad(fmtDuration(x.elapsed, localized: false), 8) + lpad(fmtPct(x.cpu), 7) + lpad(fmtBytes(x.mem), 9) + "  mcp \(x.mcpCount)"
             if let top = x.topName { row += "  ▸ \(top) \(fmtPct(x.topCPU))" }
             if x.idle { row += "  idle" }
             if x.calm { row += "  calm" }
@@ -1559,10 +1610,10 @@ enum CLI {
         ]
         if let p = s.procs {
             root["processCount"] = p.total
-            root["claudeCode"] = [
+            root["agentSessions"] = [
                 "mcpServers": p.mcpCount, "mcpMemory": p.mcpMem,
                 "sessions": p.sessions.map {
-                    ["pid": $0.id, "cwd": $0.cwd, "elapsed": $0.elapsed, "cpu": $0.cpu, "memory": $0.mem, "processes": $0.pids.count,
+                    ["pid": $0.id, "agent": $0.kind.rawValue, "cwd": $0.cwd, "elapsed": $0.elapsed, "cpu": $0.cpu, "memory": $0.mem, "processes": $0.pids.count,
                      "mcpServers": $0.mcpCount, "idle": $0.idle, "calm": $0.calm, "heaviestChild": $0.topName as Any] as [String: Any]
                 },
             ] as [String: Any]
@@ -1605,7 +1656,7 @@ enum CLI {
             }
         }
         // Never hold the agent itself back: a calmed `claude` crawls and everything it starts inherits the band.
-        let agents = Set(procs.filter { on && pids.contains($0.pid) && ProcessScanner.isClaudeCode($0) }.map(\.pid))
+        let agents = Set(procs.filter { on && pids.contains($0.pid) && ProcessScanner.isAgent($0) }.map(\.pid))
         if !agents.isEmpty { print("skipping \(agents.count) claude process(es); calming only what they started") }
         pids.subtract(agents)
         Priority.set(Array(pids), background: on)
@@ -1831,7 +1882,11 @@ final class Model: ObservableObject {
                 let stamp = DateFormatter()
                 stamp.dateFormat = "HH:mm:ss"
                 var log = UserDefaults.standard.stringArray(forKey: "guardLog") ?? []
-                log += events.map { "\(stamp.string(from: $0.date))  «\(self.sessionLabel($0.root))» [\($0.root)]  \($0.what)" }
+                log += events.map { event in
+                    let label = self.snap.procs?.sessions.first { $0.id == event.root }?.label
+                        ?? (event.agent == "codex" ? "Codex" : event.agent == "claude" ? "Claude Code" : self.sessionLabel(event.root))
+                    return "\(stamp.string(from: event.date))  «\(label)» [\(event.root)]  \(event.what)"
+                }
                 UserDefaults.standard.set(Array(log.suffix(60)), forKey: "guardLog")
             }
             let before = Set(self.guardStatus.paused.map(\.root))
@@ -1851,7 +1906,7 @@ final class Model: ObservableObject {
     }
 
     func sessionLabel(_ root: Int32) -> String {
-        snap.procs?.sessions.first { $0.id == root }?.label ?? "Claude Code"
+        snap.procs?.sessions.first { $0.id == root }?.label ?? L("Session")
     }
 
     /// Forced continue for one session, or for all of them with nil.
@@ -2249,7 +2304,7 @@ struct GuardCard: View {
             status = L("Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most.",
                        String(waiting), ltr("\(limit - Int(Guard.margin))%"))
         } else {
-            status = L("If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down.", ltr("\(limit)%"))
+            status = L("If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down.", ltr("\(limit)%"))
         }
         return Card {
             HStack(spacing: 6) {
@@ -2479,7 +2534,7 @@ struct PopoverView: View {
             VStack(alignment: .leading, spacing: 4) {
                 columnHeader(rtl(L("Sessions: %@ · MCP servers: %@", String(p.sessions.count), String(p.mcpCount))))
                 if p.sessions.isEmpty {
-                    Text(L("No Claude Code sessions running")).font(.system(size: 12)).foregroundStyle(.secondary).padding(6)
+                    Text(L("No Claude Code or Codex sessions running")).font(.system(size: 12)).foregroundStyle(.secondary).padding(6)
                 }
                 ScrollView {
                     VStack(spacing: 2) {
@@ -2508,10 +2563,10 @@ struct PopoverView: View {
         }
     }
 
-    private func sessionRow(_ x: ClaudeSession) -> some View {
+    private func sessionRow(_ x: AgentSession) -> some View {
         let pause = model.guardStatus.paused.first { $0.root == x.id }
         return HStack(spacing: 8) {
-            Image(systemName: pause != nil ? "pause.circle.fill" : (x.idle ? "moon.zzz.fill" : "terminal.fill"))
+            Image(systemName: pause != nil ? "pause.circle.fill" : (x.idle ? "moon.zzz.fill" : x.kind.symbol))
                 .font(.system(size: 13))
                 .foregroundStyle(pause != nil ? Color.orange : (x.idle ? Color.secondary : Color.accentColor))
                 .frame(width: 16)
@@ -2530,7 +2585,7 @@ struct PopoverView: View {
                     IconButton(symbol: "pause.fill", label: L("Pause this session's work until you continue it")) { model.pause(x.id) }
                 }
                 IconButton(symbol: "xmark", label: L("Quit session")) {
-                    model.confirmKill(L("Claude Code session “%@”", x.label),
+                    model.confirmKill(L("%@ session “%@”", x.kind.title, x.label),
                                       detail: L("The session closes along with the processes it started (%@). The conversation is saved and can be resumed.", String(x.pids.count - 1)),
                                       pids: x.pids)
                 }
@@ -2540,14 +2595,14 @@ struct PopoverView: View {
         .modifier(HoverRow())
     }
 
-    private func subtitle(_ x: ClaudeSession, pause: Guard.Paused?) -> String {
+    private func subtitle(_ x: AgentSession, pause: Guard.Paused?) -> String {
         if let pause {
             let waited = max(0, Int(Date().timeIntervalSince(pause.since)))
             let since = waited < 60 ? L("%@ s", String(waited)) : fmtDuration(TimeInterval(waited))
             if pause.manual { return L("Paused by you %@ ago · waiting for you to continue", since) }
             return L("Paused %@ ago · ", since) + (pause.hot ? L("until the Mac cools down") : L("until the CPU calms down"))
         }
-        var parts = [L("Up %@", fmtDuration(x.elapsed)), ltr("MCP \(x.mcpCount)")]
+        var parts = [x.kind.title, L("Up %@", fmtDuration(x.elapsed)), ltr("MCP \(x.mcpCount)")]
         if let top = x.topName { parts.append(L("Heaviest %@", ltr("\(top) \(fmtPct(x.topCPU))"))) }
         if x.idle { parts.append(x.quietFor > 600 ? L("Idle for %@", fmtDuration(x.quietFor)) : L("Idle")) }
         if model.guardStatus.exempt.contains(x.id) { parts.append(L("Won't be paused")) }
@@ -2589,7 +2644,7 @@ struct PopoverView: View {
                         Spacer(minLength: 4)
                         numbers(cpu: g.cpu, mem: g.mem)
                         HStack(spacing: 2) {
-                            if g.mine, !ProcessScanner.protected.contains(g.name), g.name != "Claude Code" {
+                            if g.mine, !ProcessScanner.protected.contains(g.name), g.name != "Claude Code", g.name != "Codex" {
                                 IconButton(symbol: g.calm ? "leaf.fill" : "leaf",
                                            label: g.calm ? L("Back to full speed") : L("Calm: move to the efficiency cores (cooler, slower)"),
                                            tint: g.calm ? .green : .secondary) { model.toggleCalm(g.pids, isCalm: g.calm) }
@@ -2651,7 +2706,7 @@ enum Page: String, CaseIterable, Identifiable {
         case .disk: return L("Disk")
         case .power: return L("Power and Battery")
         case .sensors: return L("Sensors")
-        case .claude: return L("Claude Code")
+        case .claude: return L("AI Agents")
         case .cleaner: return L("Clean Up")
         }
     }
@@ -2927,12 +2982,12 @@ struct DashboardView: View {
                     ForEach(p.sessions.sorted { $0.elapsed < $1.elapsed }) { x in
                         let pause = model.guardStatus.paused.first { $0.root == x.id }
                         HStack(spacing: 10) {
-                            Image(systemName: pause != nil ? "pause.circle.fill" : (x.idle ? "moon.zzz.fill" : "terminal.fill"))
+                            Image(systemName: pause != nil ? "pause.circle.fill" : (x.idle ? "moon.zzz.fill" : x.kind.symbol))
                                 .foregroundStyle(pause != nil ? Color.orange : (x.idle ? Color.secondary : Color.accentColor))
                                 .frame(width: 18)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(ltr(x.label)).font(.system(size: 13, weight: .medium))
-                                Text(ltr(x.cwd)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                Text(ltr(x.kind.title + " · " + x.cwd)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
                             Spacer()
                             Text(ltr(fmtPct(x.cpu))).monospacedDigit().frame(width: 60, alignment: .trailing)
@@ -2944,7 +2999,7 @@ struct DashboardView: View {
                                 IconButton(symbol: "pause.fill", label: L("Pause this session's work until you continue it")) { model.pause(x.id) }
                             }
                             IconButton(symbol: "xmark", label: L("Quit session")) {
-                                model.confirmKill(L("Claude Code session “%@”", x.label),
+                                model.confirmKill(L("%@ session “%@”", x.kind.title, x.label),
                                                   detail: L("The session closes along with the processes it started (%@). The conversation is saved and can be resumed.", String(x.pids.count - 1)),
                                                   pids: x.pids)
                             }
@@ -3307,15 +3362,16 @@ enum Main {
         s.uptime = 2 * 86400 + 3 * 3600
         s.power = PowerInfo(plugged: true, charging: true, adapterWatts: 140, adapterName: "140W USB-C Power Adapter",
                             input: 41.2, system: 33.6, battery: 6.8, loss: 0.8, percent: 86)
-        func session(_ id: Int32, _ label: String, hours: Double, cpu: Double, mem: Double, mcp: Int, top: String? = nil, topCPU: Double = 0, idle: Bool = false) -> ClaudeSession {
-            ClaudeSession(id: id, label: label, cwd: "/Users/me/code/\(label)", elapsed: hours * 3600, cpu: cpu, mem: UInt64(mem * Double(gb)),
+        func session(_ id: Int32, _ label: String, hours: Double, cpu: Double, mem: Double, mcp: Int, top: String? = nil, topCPU: Double = 0, idle: Bool = false) -> AgentSession {
+            AgentSession(id: id, label: label, cwd: "/Users/me/code/\(label)", elapsed: hours * 3600, cpu: cpu, mem: UInt64(mem * Double(gb)),
                           pids: [id], mcpCount: mcp, topName: top, topCPU: topCPU, quietFor: idle ? 7200 : 0, idle: idle)
         }
         var report = ProcReport(total: 642)
         report.sessions = [session(9001, "my-saas-app", hours: 5.2, cpu: 112, mem: 1.4, mcp: 2, top: "php", topCPU: 96),
                            session(9002, "landing-page", hours: 1.1, cpu: 8, mem: 0.6, mcp: 1),
                            session(9003, "api-server", hours: 3.4, cpu: 0, mem: 0.7, mcp: 2),
-                           session(9004, "docs", hours: 26, cpu: 0, mem: 0.4, mcp: 1, idle: true)]
+                           session(9004, "docs", hours: 26, cpu: 0, mem: 0.4, mcp: 1, idle: true),
+                           { var c = session(9005, "Codex", hours: 2.3, cpu: 64, mem: 0.9, mcp: 1, top: "cargo", topCPU: 58); c.kind = .codex; return c }()]
         report.mcpCount = 6
         report.mcpMem = UInt64(0.4 * Double(gb))
         report.groups = [ProcGroup(name: "Arc", cpu: 18, mem: 3 * gb, pids: Array(1...24), mine: true),

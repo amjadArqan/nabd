@@ -70,8 +70,8 @@
 "Using %@ for %@ (PID %@). If it isn't intended work, quit it." = "Usa %@ desde hace %@ (PID %@). Si no es trabajo previsto, ciérralo.";
 "Orphaned MCP servers (%@)" = "Servidores MCP huérfanos (%@)";
 "Still running after their session closed, holding %@." = "Siguen activos tras cerrarse su sesión y ocupan %@.";
-"1 idle Claude Code session" = "1 sesión de Claude Code inactiva";
-"%@ idle Claude Code sessions" = "%@ sesiones de Claude Code inactivas";
+"1 idle AI session" = "1 sesión de IA inactiva";
+"%@ idle AI sessions" = "%@ sesiones de IA inactivas";
 "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕." = "Ocupan %@, servidores MCP: %@ — %@. Archívalas en la app Claude o ciérralas con ✕.";
 "%@ MCP servers running (%@)" = "%@ servidores MCP activos (%@)";
 "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter." = "Cada sesión ejecuta su propia copia de cada servidor. Desactiva los que no uses para aligerar las sesiones.";
@@ -82,6 +82,7 @@
 "Spotlight is indexing" = "Spotlight está indexando";
 "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight." = "Suele ser temporal. Si se repite, excluye las carpetas de proyectos en Ajustes del Sistema → Spotlight.";
 "All good" = "Todo bien";
+"Session" = "Sesión";
 "Quit %@?" = "¿Salir de %@?";
 "Quit" = "Salir";
 "Battery %@" = "Batería %@";
@@ -100,7 +101,7 @@
 "Off. Sessions you paused: %@." = "Desactivada. Sesiones pausadas por ti: %@.";
 "Off: nothing is paused automatically." = "Desactivada: no se pausa nada automáticamente.";
 "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most." = "Sesiones pausadas: %@. Continúan cuando la CPU baja de %@, o tras 5 minutos como máximo.";
-"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down." = "Si la CPU se mantiene en %@ o más durante 12 segundos, la sesión de Claude Code más pesada se pausa hasta que todo se calme.";
+"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down." = "Si la CPU se mantiene en %@ o más durante 12 segundos, la sesión de Claude Code o Codex más pesada se pausa hasta que todo se calme.";
 "Guard" = "Protección";
 "Limit" = "Límite";
 "Off" = "Desactivado";
@@ -140,12 +141,12 @@
 "Free" = "Libre";
 "Total" = "Total";
 "Sessions: %@ · MCP servers: %@" = "Sesiones: %@ · servidores MCP: %@";
-"No Claude Code sessions running" = "No hay sesiones de Claude Code en curso";
+"No Claude Code or Codex sessions running" = "No hay sesiones de Claude Code ni de Codex en curso";
 "Claude app · %@ processes" = "App Claude · %@ procesos";
 "Force continue (won't pause again for 15 minutes)" = "Forzar reanudación (no se volverá a pausar en 15 minutos)";
 "Pause this session's work until you continue it" = "Pausar el trabajo de esta sesión hasta que la reanudes";
 "Quit session" = "Finalizar sesión";
-"Claude Code session “%@”" = "Sesión de Claude Code “%@”";
+"%@ session “%@”" = "Sesión de %@ «%@»";
 "The session closes along with the processes it started (%@). The conversation is saved and can be resumed." = "La sesión se cierra junto con los procesos que inició (%@). La conversación se guarda y se puede reanudar.";
 "%@ s" = "%@ s";
 "Paused by you %@ ago · waiting for you to continue" = "Pausada por ti hace %@ · esperando a que la reanudes";
@@ -172,7 +173,7 @@
 "Last 30 minutes · network in MB/s" = "Últimos 30 minutos · red en MB/s";
 "Power and Battery" = "Energía y batería";
 "Sensors" = "Sensores";
-"Claude Code" = "Claude Code";
+"AI Agents" = "Agentes de IA";
 "Clean Up" = "Limpieza";
 "Tools" = "Herramientas";
 "%@ free" = "%@ libres";

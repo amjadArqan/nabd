@@ -70,8 +70,8 @@
 "Using %@ for %@ (PID %@). If it isn't intended work, quit it." = "%2$@にわたり %1$@ を使用中（PID %3$@）。意図した処理でなければ終了してください。";
 "Orphaned MCP servers (%@)" = "孤立した MCP サーバ（%@）";
 "Still running after their session closed, holding %@." = "セッション終了後も実行中で、%@ を使用しています。";
-"1 idle Claude Code session" = "アイドル状態の Claude Code セッション：1 件";
-"%@ idle Claude Code sessions" = "アイドル状態の Claude Code セッション：%@ 件";
+"1 idle AI session" = "アイドル状態の AI セッション:1 件";
+"%@ idle AI sessions" = "アイドル状態の AI セッション:%@ 件";
 "Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕." = "%@ を使用中、MCP サーバ：%@ — %@。Claude アプリでアーカイブするか、✕ で終了してください。";
 "%@ MCP servers running (%@)" = "MCP サーバ %@ 個が実行中（%@）";
 "Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter." = "各セッションはサーバごとに個別のコピーを実行します。使わないサーバをオフにするとセッションが軽くなります。";
@@ -82,6 +82,7 @@
 "Spotlight is indexing" = "Spotlight がインデックスを作成中";
 "Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight." = "通常は一時的なものです。続く場合は、システム設定 → Spotlight でプロジェクトフォルダを除外してください。";
 "All good" = "問題なし";
+"Session" = "セッション";
 "Quit %@?" = "%@ を終了しますか？";
 "Quit" = "終了";
 "Battery %@" = "バッテリー %@";
@@ -100,7 +101,7 @@
 "Off. Sessions you paused: %@." = "オフ。手動で一時停止したセッション：%@。";
 "Off: nothing is paused automatically." = "オフ：自動では何も一時停止しません。";
 "Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most." = "一時停止中のセッション：%@。CPU が %@ を下回るか、最長 5 分後に再開します。";
-"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down." = "CPU が 12 秒間 %@ 以上のままだと、最も重い Claude Code セッションが落ち着くまで一時停止します。";
+"If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code or Codex session pauses until things calm down." = "CPU が 12 秒間 %@ 以上のままだと、最も重い Claude Code または Codex のセッションが落ち着くまで一時停止します。";
 "Guard" = "ガード";
 "Limit" = "上限";
 "Off" = "オフ";
@@ -140,12 +141,12 @@
 "Free" = "空き";
 "Total" = "合計";
 "Sessions: %@ · MCP servers: %@" = "セッション：%@ · MCP サーバ：%@";
-"No Claude Code sessions running" = "実行中の Claude Code セッションはありません";
+"No Claude Code or Codex sessions running" = "実行中の Claude Code / Codex セッションはありません";
 "Claude app · %@ processes" = "Claude アプリ · %@ プロセス";
 "Force continue (won't pause again for 15 minutes)" = "強制再開（15 分間は再び一時停止しません）";
 "Pause this session's work until you continue it" = "再開するまでこのセッションの処理を一時停止";
 "Quit session" = "セッションを終了";
-"Claude Code session “%@”" = "Claude Code セッション“%@”";
+"%@ session “%@”" = "%@ セッション「%@」";
 "The session closes along with the processes it started (%@). The conversation is saved and can be resumed." = "セッションと、それが起動したプロセス（%@）が終了します。会話は保存され、再開できます。";
 "%@ s" = "%@ 秒";
 "Paused by you %@ ago · waiting for you to continue" = "%@前に手動で一時停止 · 再開待ち";
@@ -172,7 +173,7 @@
 "Last 30 minutes · network in MB/s" = "過去 30 分 · ネットワーク（MB/s）";
 "Power and Battery" = "電源とバッテリー";
 "Sensors" = "センサー";
-"Claude Code" = "Claude Code";
+"AI Agents" = "AI エージェント";
 "Clean Up" = "クリーンアップ";
 "Tools" = "ツール";
 "%@ free" = "空き %@";
