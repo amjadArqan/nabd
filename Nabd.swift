@@ -1,5 +1,6 @@
-// Nabd (نبض) — a light menu bar monitor for temperature, CPU and memory on macOS,
-// with a focus on Claude Code sessions and background dev services.
+// Nabd — a light menu bar monitor for temperature, CPU, GPU, memory, network, disk and power on macOS,
+// with a focus on Claude Code sessions and background dev services. English is the base language;
+// translations live in Localization/<language>.lproj/Localizable.strings.
 //
 // Build: ./build.sh      GUI: open Nabd.app      CLI: ./nabd status | doctor | json | line
 
@@ -8,6 +9,7 @@ import SwiftUI
 import IOKit
 import ServiceManagement
 import UserNotifications
+import Charts
 
 // MARK: - Small helpers
 
@@ -32,13 +34,58 @@ func fmtBytes(_ b: UInt64) -> String {
     return String(format: "%.0f MB", Double(b) / 1_048_576)
 }
 
-func fmtDuration(_ t: TimeInterval, arabic: Bool = true) -> String {
+// MARK: Localization
+
+/// The app bundle, also when the binary runs through a symlink such as `./nabd` (then Bundle.main is the link's folder).
+let appBundle: Bundle = {
+    if Bundle.main.bundleURL.pathExtension == "app" { return .main }
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    return app.pathExtension == "app" ? Bundle(url: app) ?? .main : .main
+}()
+
+/// The language macOS picked for this app from the user's preferred languages and the ones we ship.
+let appLanguage = appBundle.preferredLocalizations.first ?? "en"
+let isRTL = Locale.Language(identifier: appLanguage).characterDirection == .rightToLeft
+/// Latin digits everywhere, so numbers read the same next to units like GB and W.
+let appLocale = Locale(identifier: appLanguage + "@numbers=latn")
+
+/// English text is the key; a missing translation falls back to it.
+func L(_ key: String) -> String { appBundle.localizedString(forKey: key, value: key, table: nil) }
+func L(_ key: String, _ args: CVarArg...) -> String { String(format: L(key), locale: appLocale, arguments: args) }
+
+private let durationFormatter: DateComponentsFormatter = {
+    let f = DateComponentsFormatter()
+    f.unitsStyle = .abbreviated
+    f.maximumUnitCount = 2
+    f.allowedUnits = [.day, .hour, .minute]
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.locale = appLocale
+    f.calendar = calendar
+    return f
+}()
+
+/// "2d 3h" in the app's language; `localized: false` keeps plain English units for the terminal.
+func fmtDuration(_ t: TimeInterval, localized: Bool = true) -> String {
+    if localized, let text = durationFormatter.string(from: max(60, t)) { return text }
     let s = max(0, Int(t))
     let d = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60
-    let (D, H, M) = arabic ? ("ي", "س", "د") : ("d", "h", "m")
-    if d > 0 { return "\(d)\(D) \(h)\(H)" }
-    if h > 0 { return "\(h)\(H) \(m)\(M)" }
-    return "\(m)\(M)"
+    if d > 0 { return "\(d)d \(h)h" }
+    if h > 0 { return "\(h)h \(m)m" }
+    return "\(m)m"
+}
+
+/// Bytes per second, compact for the menu bar ("1.2M") or spelled out for the panel ("1.2 MB/s").
+func fmtRate(_ bytes: Double, short: Bool = false) -> String {
+    let mb = bytes / 1_048_576
+    if short { return mb >= 1 ? String(format: "%.1fM", mb) : String(format: "%.0fK", bytes / 1024) }
+    return mb >= 1 ? String(format: "%.1f MB/s", mb) : String(format: "%.0f KB/s", bytes / 1024)
+}
+
+/// Storage in decimal units, as Finder shows it.
+func fmtDisk(_ b: UInt64) -> String {
+    let gb = Double(b) / 1e9
+    return gb >= 1000 ? String(format: "%.1f TB", gb / 1000) : String(format: "%.0f GB", gb)
 }
 
 func fmtPct(_ v: Double) -> String { String(format: "%.0f%%", v) }
@@ -46,9 +93,9 @@ func fmtPct(_ v: Double) -> String { String(format: "%.0f%%", v) }
 /// Isolates a left-to-right run (numbers, units, process names) inside right-to-left text.
 func ltr(_ s: String) -> String { "\u{2066}\(s)\u{2069}" }
 
-/// Text takes its base direction from the first strong character; this pins Arabic sentences that
-/// start with a Latin name ("Spotlight يفهرس…") to right-to-left.
-func rtl(_ s: String) -> String { "\u{200F}" + s }
+/// Text takes its base direction from its first strong character; in a right-to-left language this pins
+/// sentences that start with a Latin name ("Spotlight …") to right-to-left. A no-op otherwise.
+func rtl(_ s: String) -> String { isRTL ? "\u{200F}" + s : s }
 
 // MARK: - Model types
 
@@ -96,10 +143,24 @@ struct PowerInfo {
     var loss: Double?          // lost as heat inside the charger
     var percent: Int?
     var minutesLeft: Int?
+    var health: Double?        // full-charge capacity as a percent of the design capacity
+    var cycles: Int?
     /// What the wall socket delivers: the charger's output plus its own loss.
     var wall: Double? { plugged ? input.map { $0 + (loss ?? 0) } : nil }
     /// The headline number: from the wall when plugged in, otherwise what the battery is feeding the Mac.
     var draw: Double? { wall ?? system ?? battery.map { abs($0) } }
+}
+
+struct HistoryPoint: Identifiable {
+    var id: Date { time }
+    let time: Date
+    let cpu: Double
+    let gpu: Double?
+    let temp: Double?
+    let mem: Double
+    let power: Double?
+    let netIn: Double?
+    let netOut: Double?
 }
 
 struct Proc {
@@ -174,6 +235,13 @@ struct Snapshot {
     var thermal = ProcessInfo.ThermalState.nominal
     var uptime: TimeInterval = 0
     var power: PowerInfo?
+    var gpu: Double?          // percent busy
+    var netIn: Double?        // bytes per second
+    var netOut: Double?
+    var diskRead: Double?     // bytes per second
+    var diskWrite: Double?
+    var diskFree: UInt64?
+    var diskTotal: UInt64?
     var procs: ProcReport?
     var advice: [Advice] = []
 
@@ -192,13 +260,13 @@ struct Snapshot {
 }
 
 extension ProcessInfo.ThermalState {
-    var arabic: String {
+    var localized: String {
         switch self {
-        case .nominal: return "طبيعية"
-        case .fair: return "دافئة"
-        case .serious: return "ساخنة"
-        case .critical: return "حرجة"
-        @unknown default: return "؟"
+        case .nominal: return L("Normal")
+        case .fair: return L("Warm")
+        case .serious: return L("Hot")
+        case .critical: return L("Critical")
+        @unknown default: return "?"
         }
     }
     var english: String {
@@ -312,7 +380,7 @@ final class SMC {
         }
     }
 
-    func values(_ keys: [UInt32]) -> [Double] { keys.compactMap { read($0) }.filter { $0 > 5 && $0 < 130 } }
+    func values(_ keys: [UInt32]) -> [Double] { keys.compactMap { read($0) }.filter { $0 >= 20 && $0 < 130 } }
     func fans() -> [Fan] { fanInfo.compactMap { f in read(f.key).map { Fan(rpm: $0, min: f.min, max: f.max) } } }
 }
 
@@ -495,7 +563,7 @@ final class Guard {
         stopped[root] = nil
         if let was = paused.removeValue(forKey: root) {
             immuneUntil[root] = now.addingTimeInterval(Guard.grace)
-            events.append(Event(date: now, root: root, what: "أكملت بعد \(Int(now.timeIntervalSince(was.since))) ثانية: \(why)"))
+            events.append(Event(date: now, root: root, what: L("Continued after %@ s: %@", String(Int(now.timeIntervalSince(was.since))), why)))
         }
     }
 
@@ -516,7 +584,7 @@ final class Guard {
         let now = Date()
         for r in root.map({ [$0] }) ?? Array(paused.keys) {
             manual.remove(r)
-            resume(r, at: now, why: "أمر إكمال إجباري")
+            resume(r, at: now, why: L("forced continue"))
             immuneUntil[r] = nil
             exemptUntil[r] = now.addingTimeInterval(Guard.exemption)
         }
@@ -530,7 +598,7 @@ final class Guard {
         manual.insert(root)
         exemptUntil[root] = nil
         paused[root] = Paused(root: root, since: Date(), manual: true, hot: false)
-        events.append(Event(date: Date(), root: root, what: "أوقفتَها يدويًا"))
+        events.append(Event(date: Date(), root: root, what: L("Paused by you")))
         enforce(root)
         persistStopped()
         lastStatus = status()
@@ -596,7 +664,7 @@ final class Guard {
 
         // Sessions that ended take their pause with them; anything of theirs still stopped is let go.
         for root in Set(stopped.keys).union(paused.keys) where jobs[root] == nil {
-            resume(root, at: now, why: "الجلسة انتهت")
+            resume(root, at: now, why: L("the session ended"))
             immuneUntil[root] = nil
         }
         manual.formIntersection(jobs.keys)
@@ -609,7 +677,7 @@ final class Guard {
         if input.limit == 0 {
             pressure = 0
             calm = 0
-            for (root, info) in paused where !info.manual { resume(root, at: now, why: "الحارس أُطفئ") }
+            for (root, info) in paused where !info.manual { resume(root, at: now, why: L("the guard was turned off")) }
         } else {
             pressure = cpu >= limit || hot ? pressure + 1 : 0
             calm = cpu < limit - Guard.margin && cool ? calm + 1 : 0
@@ -620,17 +688,17 @@ final class Guard {
                 if let heaviest = candidates.max(by: { $0.value < $1.value }) {
                     paused[heaviest.key] = Paused(root: heaviest.key, since: now, manual: false, hot: cpu < limit)
                     pressure = 0
-                    let reason = cpu < limit ? "الجهاز ساخن" : "المعالج \(Int(cpu.rounded()))% والحد \(input.limit)%"
+                    let reason = cpu < limit ? L("the Mac is hot") : L("CPU at %@ with the limit at %@", "\(Int(cpu.rounded()))%", "\(input.limit)%")
                     let cores = String(format: "%.1f", heaviest.value)
-                    events.append(Event(date: now, root: heaviest.key, what: "أوقفتها مؤقتًا: \(reason)، وكانت الأثقل (\(cores) نواة)"))
+                    events.append(Event(date: now, root: heaviest.key, what: L("Paused: %@; it was the heaviest (%@ cores)", reason, cores)))
                 }
             }
 
             let waiting = paused.values.filter { !$0.manual }.sorted { $0.since < $1.since }
             if let overdue = waiting.first(where: { now.timeIntervalSince($0.since) >= Guard.maximumPause }) {
-                resume(overdue.root, at: now, why: "انتظرت الحد الأقصى")
+                resume(overdue.root, at: now, why: L("waited the longest allowed"))
             } else if calm >= Guard.relief, let next = waiting.first(where: { now.timeIntervalSince($0.since) >= Guard.minimumPause }) {
-                resume(next.root, at: now, why: "المعالج هدأ (\(Int(cpu.rounded()))%)")
+                resume(next.root, at: now, why: L("the CPU calmed down (%@)", "\(Int(cpu.rounded()))%"))
                 calm = 0
             }
         }
@@ -803,7 +871,7 @@ enum ProcessScanner {
             let all = [root] + kids
             all.forEach { inSession.insert($0.pid) }
             let dir = cwd(root.pid) ?? ""
-            let label = dir.contains("/scratch-workspaces/") ? "جلسة بدون مجلد" : (dir.split(separator: "/").last.map(String.init) ?? "claude")
+            let label = dir.contains("/scratch-workspaces/") ? L("No folder") : (dir.split(separator: "/").last.map(String.init) ?? "claude")
             let top = kids.max { $0.cpu < $1.cpu }
             let mcp = kids.filter { isMCP($0) && !(byPid[$0.ppid].map(isMCP) ?? false) }.count
             var session = ClaudeSession(id: root.pid, label: label, cwd: dir, elapsed: root.elapsed, cpu: all.reduce(0) { $0 + $1.cpu },
@@ -847,6 +915,7 @@ final class Sampler {
         s.mem = memory()
         s.temps = temps()
         s.power = power()
+        io(into: &s)
         s.thermal = ProcessInfo.processInfo.thermalState
         var load = [Double](repeating: 0, count: 3)
         getloadavg(&load, 3)
@@ -935,6 +1004,85 @@ final class Sampler {
         return t
     }
 
+    // MARK: GPU, network, disk
+
+    private var lastIOTime: TimeInterval?
+    private var lastNet: [String: (rx: UInt32, tx: UInt32)] = [:]
+    private var lastDisk: (read: UInt64, write: UInt64)?
+
+    private func io(into s: inout Snapshot) {
+        s.gpu = gpuUsage()
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = lastIOTime.map { now - $0 } ?? 0
+        defer { lastIOTime = now }
+
+        // Interface counters are 32-bit and wrap, so take deltas per interface with wrapping arithmetic.
+        var rx = 0.0, tx = 0.0
+        var current: [String: (rx: UInt32, tx: UInt32)] = [:]
+        var list: UnsafeMutablePointer<ifaddrs>?
+        if getifaddrs(&list) == 0 {
+            var cursor = list
+            while let entry = cursor {
+                defer { cursor = entry.pointee.ifa_next }
+                guard let addr = entry.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_LINK),
+                      let data = entry.pointee.ifa_data?.assumingMemoryBound(to: if_data.self) else { continue }
+                let name = String(cString: entry.pointee.ifa_name)
+                guard !name.hasPrefix("lo") else { continue }
+                let counters = (rx: data.pointee.ifi_ibytes, tx: data.pointee.ifi_obytes)
+                current[name] = counters
+                if let previous = lastNet[name] {
+                    rx += Double(counters.rx &- previous.rx)
+                    tx += Double(counters.tx &- previous.tx)
+                }
+            }
+            freeifaddrs(list)
+        }
+        lastNet = current
+
+        let disk = diskBytes()
+        if elapsed > 0.2 {
+            s.netIn = rx / elapsed
+            s.netOut = tx / elapsed
+            if let last = lastDisk, disk.read >= last.read, disk.write >= last.write {
+                s.diskRead = Double(disk.read - last.read) / elapsed
+                s.diskWrite = Double(disk.write - last.write) / elapsed
+            }
+        }
+        lastDisk = disk
+
+        if let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]) {
+            s.diskTotal = values.volumeTotalCapacity.map(UInt64.init)
+            s.diskFree = values.volumeAvailableCapacityForImportantUsage.map(UInt64.init)
+        }
+    }
+
+    private func registryEntries(_ className: String) -> [[String: Any]] {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(className), &iterator) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var out: [[String: Any]] = []
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            var properties: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+               let dict = properties?.takeRetainedValue() as? [String: Any] { out.append(dict) }
+            IOObjectRelease(service)
+        }
+        return out
+    }
+
+    /// The graphics driver's own utilization figure (undocumented key, but what Stats and others read).
+    private func gpuUsage() -> Double? {
+        registryEntries("IOAccelerator").compactMap { ($0["PerformanceStatistics"] as? [String: Any])?["Device Utilization %"] as? NSNumber }
+            .map(\.doubleValue).max()
+    }
+
+    private func diskBytes() -> (read: UInt64, write: UInt64) {
+        registryEntries("IOBlockStorageDriver").reduce((UInt64(0), UInt64(0))) { total, entry in
+            guard let stats = entry["Statistics"] as? [String: Any] else { return total }
+            return (total.0 + ((stats["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0), total.1 + ((stats["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0))
+        }
+    }
+
     private func power() -> PowerInfo? {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
         guard service != 0 else { return nil }  // a Mac without a battery
@@ -947,6 +1095,11 @@ final class Sampler {
         p.charging = (value("IsCharging") as? Bool) ?? false
         p.percent = number("CurrentCapacity")?.intValue
         if let minutes = number("TimeRemaining")?.intValue, minutes > 0, minutes < 65535 { p.minutesLeft = minutes }
+        p.cycles = number("CycleCount")?.intValue
+        if let data = value("BatteryData") as? [String: Any], let full = (data["FullChargeCapacity"] as? NSNumber)?.doubleValue,
+           let design = (data["DesignCapacity"] as? NSNumber)?.doubleValue, design > 0 {
+            p.health = min(100, full / design * 100)
+        }
         if p.plugged, let adapter = value("AdapterDetails") as? [String: Any] {
             p.adapterWatts = (adapter["Watts"] as? NSNumber)?.doubleValue
             p.adapterName = adapter["Name"] as? String
@@ -990,77 +1143,85 @@ enum Advisor {
     static func advise(_ s: Snapshot) -> [Advice] {
         var out: [Advice] = []
         let groups = s.procs?.groups ?? []
+        let sep = L(", ")
         let topCPU = groups.sorted { $0.cpu > $1.cpu }.prefix(3).filter { $0.cpu >= 10 }
-            .map { "\(ltr($0.name)) \(ltr(fmtPct($0.cpu)))" }.joined(separator: "، ")
-        let topMem = groups.sorted { $0.mem > $1.mem }.prefix(3).map { "\(ltr($0.name)) \(ltr(fmtBytes($0.mem)))" }.joined(separator: "، ")
+            .map { "\(ltr($0.name)) \(ltr(fmtPct($0.cpu)))" }.joined(separator: sep)
+        let topMem = groups.sorted { $0.mem > $1.mem }.prefix(3).map { "\(ltr($0.name)) \(ltr(fmtBytes($0.mem)))" }.joined(separator: sep)
 
         if s.thermal == .serious || s.thermal == .critical {
-            out.append(Advice(id: "thermal", level: .crit, title: "الجهاز ساخن والنظام يخفّض الأداء",
-                              detail: "حالة الحرارة «\(s.thermal.arabic)». أوقف أو هدّئ أثقل المهام: \(topCPU)."))
+            out.append(Advice(id: "thermal", level: .crit, title: L("The Mac is hot and macOS is slowing it down"),
+                              detail: L("Thermal state: %@. Pause or calm the heaviest work: %@.", s.thermal.localized, topCPU)))
         } else if let t = s.temps.cpu, t >= 80 {
-            out.append(Advice(id: "temp", level: t >= 95 ? .crit : .warn, title: "حرارة المعالج مرتفعة (\(ltr(String(format: "%.0f°", t))))",
-                              detail: "الأثقل الآن: \(topCPU). أوقف أثقل جلسة مؤقتًا من اللوحة، أو اترك الحارس يفعلها عند تجاوز الحد."))
+            out.append(Advice(id: "temp", level: t >= 95 ? .crit : .warn, title: L("CPU temperature is high (%@)", ltr(String(format: "%.0f°", t))),
+                              detail: L("Heaviest now: %@. Pause the heaviest session from the panel, or let the guard do it at the limit.", topCPU)))
         } else if let fan = s.temps.fans.max(by: { $0.fraction < $1.fraction }), fan.fraction >= 0.9 {
-            out.append(Advice(id: "fans", level: .warn, title: "المراوح على أقصى سرعة (\(ltr(String(format: "%.0f rpm", fan.rpm))))",
-                              detail: "الحمل المستمر يولّد حرارة والمراوح تعوّضها. إيقاف أثقل جلسة مؤقتًا يخفض الحرارة والضجيج."))
+            out.append(Advice(id: "fans", level: .warn, title: L("Fans at full speed (%@)", ltr(String(format: "%.0f rpm", fan.rpm))),
+                              detail: L("Sustained load makes heat and the fans make up for it. Pausing the heaviest session lowers heat and noise.")))
         }
 
         let ratio = s.load[0] / Double(max(1, s.ncpu))
         if ratio >= 2, s.cpuTotal >= 90 {
-            out.append(Advice(id: "load", level: ratio >= 4 ? .crit : .warn, title: "المعالج محمّل فوق طاقته (\(ltr(String(format: "%.1f×", ratio))))",
-                              detail: "متوسط الحمل \(ltr(String(format: "%.0f", s.load[0]))) على \(s.ncpu) أنوية: المهام تنتظر دورها. الأثقل: \(topCPU.isEmpty ? "—" : topCPU)."))
+            out.append(Advice(id: "load", level: ratio >= 4 ? .crit : .warn, title: L("The CPU is overloaded (%@)", ltr(String(format: "%.1f×", ratio))),
+                              detail: L("Load average %@ on %@ cores: work is waiting its turn. Heaviest: %@.",
+                                        ltr(String(format: "%.0f", s.load[0])), String(s.ncpu), topCPU.isEmpty ? "—" : topCPU)))
         }
 
         if s.mem.pressure >= 2 {
-            out.append(Advice(id: "pressure", level: s.mem.pressure >= 4 ? .crit : .warn, title: "ضغط على الذاكرة",
-                              detail: "النظام يضغط الذاكرة ويكتب على القرص. الأكبر: \(topMem)."))
+            out.append(Advice(id: "pressure", level: s.mem.pressure >= 4 ? .crit : .warn, title: L("Memory pressure"),
+                              detail: L("macOS is compressing memory and writing it to disk. Largest: %@.", topMem)))
         }
         if s.mem.total > 0, Double(s.mem.swapUsed) >= Double(s.mem.total) * 0.25 {
-            let restart = s.uptime > 5 * 86400 ? " الجهاز يعمل منذ \(fmtDuration(s.uptime))؛ إعادة التشغيل تفرّغ السواب." : ""
-            out.append(Advice(id: "swap", level: .warn, title: "السواب مرتفع (\(ltr(fmtBytes(s.mem.swapUsed))))",
-                              detail: "القرص يُستعمل كذاكرة وهذا يبطّئ التنقل بين التطبيقات. الأكبر: \(topMem).\(restart)"))
+            let restart = s.uptime > 5 * 86400 ? " " + L("The Mac has been up for %@; a restart clears swap.", fmtDuration(s.uptime)) : ""
+            out.append(Advice(id: "swap", level: .warn, title: L("Swap is high (%@)", ltr(fmtBytes(s.mem.swapUsed))),
+                              detail: L("The disk is standing in for memory, which slows switching between apps. Largest: %@.", topMem) + restart))
+        }
+        if let total = s.diskTotal, let free = s.diskFree, total > 0, Double(free) < Double(total) * 0.08 {
+            out.append(Advice(id: "disk", level: .warn, title: L("The disk is almost full (%@ free)", ltr(fmtDisk(free))),
+                              detail: L("macOS needs free space for swap and updates. Empty the Trash, or clear caches such as node_modules and Docker images.")))
         }
 
         if let power = s.power, power.plugged, let battery = power.battery, battery < -2 {
-            let rating = power.adapterWatts.map { " (\(ltr(String(format: "%.0fW", $0))))" } ?? ""
-            out.append(Advice(id: "charger", level: .warn, title: "البطارية تفرغ رغم الشاحن",
-                              detail: "الجهاز يسحب أكثر مما يعطيه الشاحن\(rating) بفارق \(ltr(String(format: "%.0f W", -battery))). استخدم شاحنًا أقوى أو خفّف الحمل."))
+            out.append(Advice(id: "charger", level: .warn, title: L("The battery drains while plugged in"),
+                              detail: L("The Mac draws %@ more than the charger (%@) supplies. Use a stronger charger or lighten the load.",
+                                        ltr(String(format: "%.0f W", -battery)), ltr(String(format: "%.0fW", power.adapterWatts ?? 0)))))
         }
 
         guard let p = s.procs else { return sorted(out) }
 
         for proc in p.runaway.prefix(2) {
-            out.append(Advice(id: "runaway-\(proc.pid)", level: .warn, title: "عملية عالقة على الأرجح: \(ltr(proc.name))",
-                              detail: "تستهلك \(ltr(fmtPct(proc.cpu))) منذ \(fmtDuration(proc.elapsed)) (PID \(proc.pid)). إن لم تكن مهمة مقصودة فأنهِها.",
+            out.append(Advice(id: "runaway-\(proc.pid)", level: .warn, title: L("Probably stuck: %@", ltr(proc.name)),
+                              detail: L("Using %@ for %@ (PID %@). If it isn't intended work, quit it.", ltr(fmtPct(proc.cpu)), fmtDuration(proc.elapsed), String(proc.pid)),
                               killPids: [proc.pid]))
         }
         if !p.orphanMCP.isEmpty {
             let mem = p.orphanMCP.reduce(UInt64(0)) { $0 + $1.mem }
-            out.append(Advice(id: "orphan-mcp", level: .warn, title: "خوادم MCP يتيمة (\(p.orphanMCP.count))",
-                              detail: "بقيت تعمل بعد إغلاق جلستها وتحجز \(ltr(fmtBytes(mem))).", killPids: p.orphanMCP.map(\.pid)))
+            out.append(Advice(id: "orphan-mcp", level: .warn, title: L("Orphaned MCP servers (%@)", String(p.orphanMCP.count)),
+                              detail: L("Still running after their session closed, holding %@.", ltr(fmtBytes(mem))), killPids: p.orphanMCP.map(\.pid)))
         }
         let idle = p.sessions.filter(\.idle)
         if !idle.isEmpty {
             let mem = idle.reduce(UInt64(0)) { $0 + $1.mem }
-            let names = idle.prefix(3).map { "\(ltr($0.label)) (\(fmtDuration($0.elapsed)))" }.joined(separator: "، ")
-            out.append(Advice(id: "idle-sessions", level: .ok, title: idle.count == 1 ? "جلسة Claude Code خاملة" : "\(idle.count) جلسات Claude Code خاملة",
-                              detail: "تحجز \(ltr(fmtBytes(mem))) و\(idle.reduce(0) { $0 + $1.mcpCount }) خادم MCP: \(names). أرشِفها من تطبيق Claude أو أنهِها بزر ✕."))
+            let names = idle.prefix(3).map { "\(ltr($0.label)) (\(fmtDuration($0.elapsed)))" }.joined(separator: sep)
+            out.append(Advice(id: "idle-sessions", level: .ok,
+                              title: idle.count == 1 ? L("1 idle Claude Code session") : L("%@ idle Claude Code sessions", String(idle.count)),
+                              detail: L("Holding %@, MCP servers: %@ — %@. Archive them in the Claude app or quit them with ✕.",
+                                        ltr(fmtBytes(mem)), String(idle.reduce(0) { $0 + $1.mcpCount }), names)))
         }
         if p.mcpCount >= 8 {
-            out.append(Advice(id: "mcp", level: .ok, title: "\(p.mcpCount) خادم MCP يعمل (\(ltr(fmtBytes(p.mcpMem))))",
-                              detail: "كل جلسة تشغّل نسختها من كل خادم. عطّل الخوادم التي لا تستعملها ليخفّ إقلاع الجلسات واستهلاكها."))
+            out.append(Advice(id: "mcp", level: .ok, title: L("%@ MCP servers running (%@)", String(p.mcpCount), ltr(fmtBytes(p.mcpMem))),
+                              detail: L("Every session runs its own copy of each server. Turn off the ones you don't use to make sessions lighter.")))
         }
         if let desktop = p.desktop, desktop.mem >= 3 * 1_073_741_824 {
-            out.append(Advice(id: "desktop", level: .ok, title: "تطبيق Claude نفسه ثقيل (\(ltr(fmtBytes(desktop.mem))))",
-                              detail: "المحادثات الطويلة تثقل الواجهة. ابدأ جلسة جديدة للمهام الجديدة، أو أعد تشغيل التطبيق."))
+            out.append(Advice(id: "desktop", level: .ok, title: L("The Claude app itself is heavy (%@)", ltr(fmtBytes(desktop.mem))),
+                              detail: L("Long conversations weigh on the app. Start new sessions for new tasks, or restart the app.")))
         }
         if let kernel = groups.first(where: { $0.name == "kernel_task" }), kernel.cpu >= 60 {
-            out.append(Advice(id: "kernel", level: .ok, title: "kernel_task مرتفع (\(ltr(fmtPct(kernel.cpu))))",
-                              detail: "النظام يحجز المعالج عمدًا ليبرّد الجهاز. علامة حرارة وليست عطلًا."))
+            out.append(Advice(id: "kernel", level: .ok, title: L("kernel_task is high (%@)", ltr(fmtPct(kernel.cpu))),
+                              detail: L("macOS holds the CPU on purpose to cool the Mac down. A sign of heat, not a fault.")))
         }
         if let spotlight = groups.first(where: { $0.name == "Spotlight" }), spotlight.cpu >= 50 {
-            out.append(Advice(id: "spotlight", level: .ok, title: "Spotlight يفهرس الملفات",
-                              detail: "مؤقت عادةً. إن تكرر، استثنِ مجلدات المشاريع من الفهرسة في إعدادات النظام ← Spotlight ← الخصوصية."))
+            out.append(Advice(id: "spotlight", level: .ok, title: L("Spotlight is indexing"),
+                              detail: L("Usually temporary. If it keeps happening, exclude project folders in System Settings → Spotlight.")))
         }
         return sorted(out)
     }
@@ -1095,12 +1256,12 @@ enum CLI {
     private static func lpad(_ s: String, _ n: Int) -> String { String(repeating: " ", count: max(0, n - s.count)) + s }
     private static func deg(_ v: Double?) -> String { v.map { String(format: "%.0f°", $0) } ?? "n/a" }
     /// Terminals and JSON consumers do not need the bidi isolates the GUI text carries.
-    private static func plain(_ s: String) -> String { s.replacingOccurrences(of: "\u{2066}", with: "").replacingOccurrences(of: "\u{2069}", with: "") }
+    private static func plain(_ s: String) -> String { s.filter { !"\u{2066}\u{2067}\u{2068}\u{2069}\u{200E}\u{200F}".contains($0) } }
 
     static func status() {
         let s = snapshot()
         let chip = sysctlString("machdep.cpu.brand_string") ?? "Mac"
-        print(paint("Nabd · \(chip) · up \(fmtDuration(s.uptime, arabic: false))", "1"))
+        print(paint("Nabd · \(chip) · up \(fmtDuration(s.uptime, localized: false))", "1"))
         var temp = "TEMP  " + paint("CPU \(deg(s.temps.cpu))", s.tempLevel) + " (max \(deg(s.temps.cpuMax)))  GPU \(deg(s.temps.gpu))  SSD \(deg(s.temps.ssd))  BAT \(deg(s.temps.battery))"
         temp += "  thermal: \(s.thermal.english)"
         print(temp)
@@ -1114,15 +1275,22 @@ enum CLI {
         print("RAM   " + paint("\(fmtBytes(s.mem.used)) / \(fmtBytes(s.mem.total)) (\(fmtPct(s.mem.percent)))", s.memLevel)
             + "  app \(fmtBytes(s.mem.app)) · wired \(fmtBytes(s.mem.wired)) · compressed \(fmtBytes(s.mem.compressed))")
         print("      swap \(fmtBytes(s.mem.swapUsed)) / \(fmtBytes(s.mem.swapTotal))  pressure: \(pressure)")
+        var io: [String] = []
+        if let g = s.gpu { io.append("GPU \(fmtPct(g))") }
+        if let rx = s.netIn, let tx = s.netOut { io.append("net ↓\(fmtRate(rx)) ↑\(fmtRate(tx))") }
+        if let r = s.diskRead, let w = s.diskWrite { io.append("disk read \(fmtRate(r)) write \(fmtRate(w))") }
+        if let free = s.diskFree, let total = s.diskTotal { io.append("\(fmtDisk(free)) free of \(fmtDisk(total))") }
+        if !io.isEmpty { print("I/O   " + io.joined(separator: " · ")) }
         if let p = s.power {
             func w(_ v: Double?) -> String { v.map { String(format: "%.1f W", $0) } ?? "n/a" }
             if p.plugged {
                 print("POWER " + paint("\(w(p.wall)) from the wall", "1") + " · charger \(p.adapterWatts.map { String(format: "%.0fW", $0) } ?? "?")"
                     + " · Mac \(w(p.system)) · battery \(p.battery.map { String(format: "%+.1f W", $0) } ?? "n/a") · charger loss \(w(p.loss))"
-                    + " · battery \(p.percent.map { "\($0)%" } ?? "?")\(p.charging ? " charging" : "")")
+                    + " · battery \(p.percent.map { "\($0)%" } ?? "?")\(p.charging ? " charging" : "")"
+                    + (p.health.map { String(format: " · health %.0f%%", $0) } ?? "") + (p.cycles.map { " · \($0) cycles" } ?? ""))
             } else {
                 print("POWER " + paint("\(w(p.draw)) from the battery", "1") + " · battery \(p.percent.map { "\($0)%" } ?? "?")"
-                    + (p.minutesLeft.map { " · \(fmtDuration(TimeInterval($0 * 60), arabic: false)) left" } ?? ""))
+                    + (p.minutesLeft.map { " · \(fmtDuration(TimeInterval($0 * 60), localized: false)) left" } ?? ""))
             }
         }
 
@@ -1130,7 +1298,7 @@ enum CLI {
         print("\n" + paint("CLAUDE CODE  (\(p.sessions.count) sessions · \(p.mcpCount) MCP servers · \(fmtBytes(p.mcpMem)))", "1"))
         for x in p.sessions {
             let label = x.cwd.contains("/scratch-workspaces/") ? "(no folder)" : x.label
-            var row = "  " + pad(label, 28) + lpad(fmtDuration(x.elapsed, arabic: false), 8) + lpad(fmtPct(x.cpu), 7) + lpad(fmtBytes(x.mem), 9) + "  mcp \(x.mcpCount)"
+            var row = "  " + pad(label, 28) + lpad(fmtDuration(x.elapsed, localized: false), 8) + lpad(fmtPct(x.cpu), 7) + lpad(fmtBytes(x.mem), 9) + "  mcp \(x.mcpCount)"
             if let top = x.topName { row += "  ▸ \(top) \(fmtPct(x.topCPU))" }
             if x.idle { row += "  idle" }
             if x.calm { row += "  calm" }
@@ -1153,7 +1321,7 @@ enum CLI {
 
     static func printAdvice(_ s: Snapshot) {
         print("\n" + paint("ADVICE", "1"))
-        if s.advice.isEmpty { print("  ✓ كل شيء طبيعي") }
+        if s.advice.isEmpty { print("  ✓ " + L("All good")) }
         for a in s.advice {
             let mark = a.level == .crit ? paint("‼", "1;31") : (a.level == .warn ? paint("!", "33") : "·")
             print("  \(mark) \(plain(a.title))\n      \(plain(a.detail))")
@@ -1167,6 +1335,9 @@ enum CLI {
             "memory": ["total": s.mem.total, "used": s.mem.used, "percent": s.mem.percent, "app": s.mem.app, "wired": s.mem.wired,
                        "compressed": s.mem.compressed, "cached": s.mem.cached, "swapUsed": s.mem.swapUsed, "swapTotal": s.mem.swapTotal,
                        "pressure": s.mem.pressure],
+            "io": ["gpuPercent": s.gpu as Any, "networkInBytesPerSec": s.netIn as Any, "networkOutBytesPerSec": s.netOut as Any,
+                   "diskReadBytesPerSec": s.diskRead as Any, "diskWriteBytesPerSec": s.diskWrite as Any,
+                   "diskFree": s.diskFree as Any, "diskTotal": s.diskTotal as Any] as [String: Any],
             "temperature": ["cpu": s.temps.cpu as Any, "cpuMax": s.temps.cpuMax as Any, "gpu": s.temps.gpu as Any, "ssd": s.temps.ssd as Any,
                             "battery": s.temps.battery as Any, "thermalState": s.thermal.english,
                             "fans": s.temps.fans.map { ["rpm": $0.rpm, "min": $0.min, "max": $0.max] }],
@@ -1174,7 +1345,8 @@ enum CLI {
             "power": s.power.map { p in
                 ["plugged": p.plugged, "charging": p.charging, "wallWatts": p.wall as Any, "chargerOutputWatts": p.input as Any,
                  "macWatts": p.system as Any, "batteryWatts": p.battery as Any, "chargerLossWatts": p.loss as Any,
-                 "chargerRatingWatts": p.adapterWatts as Any, "batteryPercent": p.percent as Any] as [String: Any]
+                 "chargerRatingWatts": p.adapterWatts as Any, "batteryPercent": p.percent as Any,
+                 "batteryHealthPercent": p.health as Any, "batteryCycles": p.cycles as Any] as [String: Any]
             } as Any,
             "advice": s.advice.map { ["level": ["info", "warn", "crit"][$0.level.rawValue], "title": plain($0.title), "detail": plain($0.detail), "pids": $0.killPids] },
         ]
@@ -1290,7 +1462,7 @@ enum CLI {
 
     static func usage() {
         print("""
-        Nabd (نبض) — Mac temperature, CPU and memory monitor
+        Nabd — Mac temperature, CPU, memory and power monitor
 
           nabd                 menu bar app (same as: open Nabd.app)
           nabd open            menu bar app with the panel already open
@@ -1314,11 +1486,53 @@ enum CLI {
 
 final class Model: ObservableObject {
     @Published var snap = Snapshot()
-    @Published var compact = UserDefaults.standard.bool(forKey: "compact") {
+    // What the menu bar shows.
+    @Published var barTemp = Model.flag("bar.temp", true) { didSet { Model.save("bar.temp", barTemp); onUpdate?() } }
+    @Published var barCPU = Model.flag("bar.cpu", true) { didSet { Model.save("bar.cpu", barCPU); onUpdate?() } }
+    @Published var barGPU = Model.flag("bar.gpu", false) { didSet { Model.save("bar.gpu", barGPU); onUpdate?() } }
+    @Published var barRAM = Model.flag("bar.ram", true) { didSet { Model.save("bar.ram", barRAM); onUpdate?() } }
+    @Published var barNet = Model.flag("bar.net", false) { didSet { Model.save("bar.net", barNet); onUpdate?() } }
+    @Published var barPower = Model.flag("bar.power", true) { didSet { Model.save("bar.power", barPower); onUpdate?() } }
+    @Published var checkUpdates = Model.flag("checkUpdates", true) {
         didSet {
-            UserDefaults.standard.set(compact, forKey: "compact")
-            onUpdate?()
+            Model.save("checkUpdates", checkUpdates)
+            if checkUpdates { checkForUpdates() } else { update = nil }
         }
+    }
+    /// A newer release on GitHub, if there is one.
+    @Published var update: (version: String, url: URL)?
+    /// The last 30 minutes, for the History tab.
+    @Published var history: [HistoryPoint] = []
+
+    static func flag(_ key: String, _ fallback: Bool) -> Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? fallback }
+    private static func save(_ key: String, _ value: Bool) { UserDefaults.standard.set(value, forKey: key) }
+
+    /// What goes after the icon in the menu bar.
+    var barText: String {
+        let s = snap
+        var parts: [String] = []
+        if barTemp, let t = s.temps.cpu { parts.append(String(format: "%.0f°", t)) }
+        if barCPU { parts.append("CPU " + fmtPct(s.cpuTotal)) }
+        if barGPU, let g = s.gpu { parts.append("GPU " + fmtPct(g)) }
+        if barRAM { parts.append("RAM " + fmtPct(s.mem.percent)) }
+        if barNet, let rx = s.netIn, let tx = s.netOut { parts.append("↓" + fmtRate(rx, short: true) + " ↑" + fmtRate(tx, short: true)) }
+        if barPower, let w = s.power?.draw { parts.append(String(format: "%.0fW", w)) }
+        return parts.joined(separator: "  ")
+    }
+
+    /// Asks GitHub for the latest release once a day; nothing is sent besides the request itself.
+    func checkForUpdates() {
+        guard checkUpdates, let api = URL(string: "https://api.github.com/repos/amjadArqan/nabd/releases/latest") else { return }
+        var request = URLRequest(url: api)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            guard let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = json["tag_name"] as? String, let page = (json["html_url"] as? String).flatMap(URL.init(string:)) else { return }
+            let latest = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+            let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+            guard latest.compare(current, options: .numeric) == .orderedDescending else { return }
+            DispatchQueue.main.async { self.update = (latest, page) }
+        }.resume()
     }
     @Published var loginItem = false
     var onUpdate: (() -> Void)?
@@ -1362,6 +1576,9 @@ final class Model: ObservableObject {
 
     func start() {
         loginItem = SMAppService.mainApp.status == .enabled
+        checkForUpdates()
+        let daily = Timer(timeInterval: 86400, repeats: true) { [weak self] _ in self?.checkForUpdates() }
+        RunLoop.main.add(daily, forMode: .common)
         refresh(full: true)
         schedule()
         guardian.persist = true
@@ -1475,6 +1692,10 @@ final class Model: ObservableObject {
         snap = s
         pushGuardInput(runNow: false)
         trackEnergy(s.power?.draw)
+        let now = Date()
+        history.append(HistoryPoint(time: now, cpu: s.cpuTotal, gpu: s.gpu, temp: s.temps.cpu, mem: s.mem.percent,
+                                    power: s.power?.draw, netIn: s.netIn, netOut: s.netOut))
+        if let first = history.first, now.timeIntervalSince(first.time) > 1800 { history.removeAll { now.timeIntervalSince($0.time) > 1800 } }
         onUpdate?()
     }
 
@@ -1529,10 +1750,10 @@ final class Model: ObservableObject {
     func confirmKill(_ what: String, detail: String, pids: [Int32]) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "إنهاء \(what)؟"
+        alert.messageText = L("Quit %@?", what)
         alert.informativeText = detail
-        alert.addButton(withTitle: "إنهاء")
-        alert.addButton(withTitle: "إلغاء")
+        alert.addButton(withTitle: L("Quit"))
+        alert.addButton(withTitle: L("Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let me = getpid()
@@ -1565,7 +1786,7 @@ struct Ring: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 5) {
+        VStack(spacing: 4) {
             ZStack {
                 Circle().stroke(Color.primary.opacity(0.08), lineWidth: 5)
                 Circle()
@@ -1573,14 +1794,17 @@ struct Ring: View {
                     .stroke(level == .ok ? Color.accentColor : level.color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 Text(value)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .minimumScaleFactor(0.7)
+                    .lineLimit(1)
+                    .padding(.horizontal, 6)
                     .foregroundStyle(level == .ok ? Color.primary : level.color)
                     .contentTransition(.numericText())
             }
-            .frame(width: 58, height: 58)
-            Text(caption).font(.system(size: 11, weight: .medium))
-            Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            .frame(width: 54, height: 54)
+            Text(caption).font(.system(size: 11, weight: .medium)).lineLimit(1)
+            Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: fraction)
@@ -1638,6 +1862,48 @@ struct IconButton: View {
     }
 }
 
+/// A small line chart for the History tab: one or two series over the last 30 minutes.
+struct MiniChart: View {
+    let title: String
+    let current: String
+    let points: [HistoryPoint]
+    let series: [(name: String, color: Color, value: (HistoryPoint) -> Double?)]
+    var domain: ClosedRange<Double>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Text(current).font(.system(size: 11, weight: .medium)).monospacedDigit()
+            }
+            Chart {
+                ForEach(series.indices, id: \.self) { i in
+                    ForEach(points) { point in
+                        if let v = series[i].value(point) {
+                            LineMark(x: .value("Time", point.time), y: .value(series[i].name, v), series: .value("Series", series[i].name))
+                                .foregroundStyle(series[i].color)
+                                .interpolationMethod(.monotone)
+                        }
+                    }
+                }
+            }
+            .chartXAxis(.hidden)
+            .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 2)) { _ in AxisGridLine(); AxisValueLabel() } }
+            .modifier(OptionalDomain(domain: domain))
+            .frame(height: 52)
+            .accessibilityLabel("\(title) \(current)")
+        }
+    }
+}
+
+private struct OptionalDomain: ViewModifier {
+    let domain: ClosedRange<Double>?
+    func body(content: Content) -> some View {
+        if let domain { content.chartYScale(domain: domain) } else { content }
+    }
+}
+
 struct PopoverView: View {
     @ObservedObject var model: Model
     @State private var section = 0
@@ -1650,9 +1916,10 @@ struct PopoverView: View {
             header(s)
             rings(s)
             Picker("", selection: $section) {
-                Text("نظرة عامة").tag(0)
-                Text("الجلسات").tag(1)
-                Text("العمليات").tag(2)
+                Text(L("Overview")).tag(0)
+                Text(L("Sessions")).tag(1)
+                Text(L("Processes")).tag(2)
+                Text(L("History")).tag(3)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -1660,15 +1927,16 @@ struct PopoverView: View {
                 switch section {
                 case 1: sessionsSection(s)
                 case 2: processesSection(s)
+                case 3: historySection
                 default: overviewSection(s)
                 }
             }
             .transition(.opacity)
         }
         .padding(14)
-        .frame(width: 420)
+        .frame(width: 440)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: section)
-        .environment(\.layoutDirection, .rightToLeft)
+        .environment(\.layoutDirection, isRTL ? .rightToLeft : .leftToRight)
     }
 
     // MARK: Header
@@ -1677,38 +1945,55 @@ struct PopoverView: View {
         HStack(spacing: 8) {
             Image(systemName: "waveform.path.ecg").font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentColor)
                 .accessibilityHidden(true)
-            Text("نبض").font(.system(size: 15, weight: .bold))
-            Label("الحرارة \(s.thermal.arabic)", systemImage: s.tempLevel == .ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            Text(L("Nabd")).font(.system(size: 15, weight: .bold))
+            Label(L("Thermal: %@", s.thermal.localized), systemImage: s.tempLevel == .ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(s.tempLevel == .ok ? Color.green : s.tempLevel.color)
                 .padding(.horizontal, 7).padding(.vertical, 2)
                 .background(Capsule().fill((s.tempLevel == .ok ? Color.green : s.tempLevel.color).opacity(0.14)))
+            if let update = model.update {
+                Button { NSWorkspace.shared.open(update.url) } label: {
+                    Label(L("Update %@", update.version), systemImage: "arrow.down.circle.fill").font(.system(size: 10, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
+                .help(L("A newer version is on GitHub"))
+            }
             Spacer()
-            Text("يعمل منذ \(fmtDuration(s.uptime))").font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(L("Up %@", fmtDuration(s.uptime))).font(.system(size: 10)).foregroundStyle(.secondary)
             settingsMenu
         }
     }
 
     private var settingsMenu: some View {
         Menu {
-            Toggle("عرض مختصر في شريط القوائم", isOn: $model.compact)
-            Toggle("تشغيل مع الجهاز", isOn: Binding(get: { model.loginItem }, set: { model.setLoginItem($0) }))
+            Menu(L("Show in Menu Bar")) {
+                Toggle(L("Temperature"), isOn: $model.barTemp)
+                Toggle(L("CPU"), isOn: $model.barCPU)
+                Toggle(L("GPU"), isOn: $model.barGPU)
+                Toggle(L("Memory"), isOn: $model.barRAM)
+                Toggle(L("Network"), isOn: $model.barNet)
+                Toggle(L("Power"), isOn: $model.barPower)
+            }
+            Toggle(L("Start at Login"), isOn: Binding(get: { model.loginItem }, set: { model.setLoginItem($0) }))
+            Toggle(L("Check for Updates Automatically"), isOn: $model.checkUpdates)
             Divider()
-            Button("فتح في نافذة") { model.onOpenWindow?() }
-            Button("فتح مراقب النشاط") {
+            Button(L("Open in Window")) { model.onOpenWindow?() }
+            Button(L("Open Activity Monitor")) {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
             }
+            Button(L("Nabd on GitHub")) { NSWorkspace.shared.open(URL(string: "https://github.com/amjadArqan/nabd")!) }
             Divider()
-            Button("إغلاق نبض") { NSApp.terminate(nil) }
+            Button(L("Quit Nabd")) { NSApp.terminate(nil) }
         } label: {
             Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("الإعدادات")
-        .accessibilityLabel("الإعدادات")
+        .help(L("Settings"))
+        .accessibilityLabel(L("Settings"))
     }
 
     // MARK: Rings
@@ -1719,18 +2004,23 @@ struct PopoverView: View {
         let power = s.power
         let draw = power?.draw
         let capacity = power?.adapterWatts ?? 100
-        return HStack(alignment: .top, spacing: 4) {
-            Ring(caption: "الحرارة", value: temp.map { ltr(String(format: "%.0f°", $0)) } ?? "—",
+        return HStack(alignment: .top, spacing: 2) {
+            Ring(caption: L("Temperature"), value: temp.map { ltr(String(format: "%.0f°", $0)) } ?? "—",
                  fraction: ((temp ?? 30) - 30) / 70, level: s.tempLevel,
-                 detail: fan.map { "مراوح " + ltr(String(format: "%.0f%%", $0.fraction * 100)) } ?? s.temps.cpuMax.map { "الأعلى " + ltr(String(format: "%.0f°", $0)) } ?? "")
-            Ring(caption: "المعالج", value: ltr(fmtPct(s.cpuTotal)), fraction: s.cpuTotal / 100, level: s.cpuLevel,
-                 detail: "الحمل " + ltr(String(format: "%.1f", s.load[0])))
-            Ring(caption: "الذاكرة", value: ltr(fmtPct(s.mem.percent)), fraction: s.mem.percent / 100, level: s.memLevel,
-                 detail: "سواب " + ltr(fmtBytes(s.mem.swapUsed)))
+                 detail: fan.map { L("Fans %@", ltr(String(format: "%.0f%%", $0.fraction * 100))) }
+                    ?? s.temps.cpuMax.map { L("Peak %@", ltr(String(format: "%.0f°", $0))) } ?? "")
+            Ring(caption: L("CPU"), value: ltr(fmtPct(s.cpuTotal)), fraction: s.cpuTotal / 100, level: s.cpuLevel,
+                 detail: L("Load %@", ltr(String(format: "%.1f", s.load[0]))))
+            if let gpu = s.gpu {
+                Ring(caption: L("GPU"), value: ltr(fmtPct(gpu)), fraction: gpu / 100, level: .ok,
+                     detail: s.temps.gpu.map { ltr(String(format: "%.0f°", $0)) } ?? "")
+            }
+            Ring(caption: L("Memory"), value: ltr(fmtPct(s.mem.percent)), fraction: s.mem.percent / 100, level: s.memLevel,
+                 detail: L("Swap %@", ltr(fmtBytes(s.mem.swapUsed))))
             if power != nil {
-                Ring(caption: "الكهرباء", value: draw.map { ltr(String(format: "%.0fW", $0)) } ?? "—",
+                Ring(caption: L("Power"), value: draw.map { ltr(String(format: "%.0fW", $0)) } ?? "—",
                      fraction: (draw ?? 0) / capacity, level: .ok,
-                     detail: power?.plugged == true ? "من " + ltr(String(format: "%.0fW", capacity)) : "من البطارية")
+                     detail: power?.plugged == true ? L("of %@", ltr(String(format: "%.0fW", capacity))) : L("Battery"))
             }
         }
     }
@@ -1743,9 +2033,37 @@ struct PopoverView: View {
 
     private func overviewSection(_ s: Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            ioCard(s)
             if let power = s.power { powerCard(power) }
             adviceCard(s)
             guardCard
+        }
+    }
+
+    private func ioCard(_ s: Snapshot) -> some View {
+        func column(_ title: String, _ symbol: String, _ lines: [(String, String)]) -> some View {
+            VStack(alignment: .leading, spacing: 3) {
+                Label(title, systemImage: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                ForEach(lines.indices, id: \.self) { i in
+                    HStack(spacing: 4) {
+                        Text(lines[i].0).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(ltr(lines[i].1)).font(.system(size: 11, weight: .medium)).monospacedDigit()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        let rate = { (v: Double?) in v.map { fmtRate($0) } ?? "—" }
+        return Card {
+            HStack(alignment: .top, spacing: 10) {
+                column(L("Network"), "network", [("↓", rate(s.netIn)), ("↑", rate(s.netOut))])
+                Divider()
+                column(L("Disk"), "internaldrive", [(L("Read"), rate(s.diskRead)), (L("Write"), rate(s.diskWrite))])
+                Divider()
+                column(L("Storage"), "externaldrive", [(L("Free"), s.diskFree.map(fmtDisk) ?? "—"),
+                                                     (L("Total"), s.diskTotal.map(fmtDisk) ?? "—")])
+            }
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1753,13 +2071,18 @@ struct PopoverView: View {
         let draw = p.draw ?? 0
         let w = { (v: Double) in ltr(String(format: v < 10 ? "%.1fW" : "%.0fW", v)) }
         let energy = model.energyToday >= 1000 ? String(format: "%.2f kWh", model.energyToday / 1000) : String(format: "%.0f Wh", model.energyToday)
+        var battery: [String] = []
+        if let percent = p.percent { battery.append(L("Battery %@", ltr("\(percent)%"))) }
+        if let health = p.health { battery.append(L("Health %@", ltr(String(format: "%.0f%%", health)))) }
+        if let cycles = p.cycles { battery.append(L("%@ cycles", String(cycles))) }
+        if !p.plugged, let minutes = p.minutesLeft { battery.append(L("%@ left", fmtDuration(TimeInterval(minutes * 60)))) }
         return Card {
             HStack(spacing: 5) {
                 Image(systemName: p.plugged ? "bolt.fill" : "battery.75percent").foregroundStyle(p.plugged ? Color.yellow : Color.secondary)
                     .accessibilityHidden(true)
-                Text(p.plugged ? "الكهرباء من الشاحن" : "من البطارية").font(.system(size: 12, weight: .semibold))
+                Text(p.plugged ? L("Power from the charger") : L("On battery")).font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Text(rtl("الأعلى \(w(model.powerPeak)) · اليوم \(ltr(energy))")).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(rtl(L("Peak %@ · Today %@", w(model.powerPeak), ltr(energy)))).font(.system(size: 10)).foregroundStyle(.secondary)
             }
             if let rating = p.adapterWatts, rating > 0 {
                 // How much of the charger's capacity is in use, split by where it goes.
@@ -1778,35 +2101,33 @@ struct PopoverView: View {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: draw)
             }
             HStack(spacing: 12) {
-                if let system = p.system { legend(Color.accentColor, "الجهاز", w(system)) }
-                if p.plugged, let battery = p.battery, abs(battery) >= 0.5 {
-                    legend(battery > 0 ? Color.green : Color.orange, battery > 0 ? "شحن البطارية" : "من البطارية", w(abs(battery)))
+                if let system = p.system { legend(Color.accentColor, L("Mac %@", w(system))) }
+                if p.plugged, let charge = p.battery, abs(charge) >= 0.5 {
+                    legend(charge > 0 ? Color.green : Color.orange, charge > 0 ? L("Charging %@", w(charge)) : L("From battery %@", w(-charge)))
                 }
-                if p.plugged, let loss = p.loss, loss >= 0.1 { legend(Color.secondary.opacity(0.6), "فاقد الشاحن", w(loss)) }
-                Spacer(minLength: 0)
-                if let percent = p.percent {
-                    Text(rtl("البطارية \(ltr("\(percent)%"))" + (!p.plugged ? p.minutesLeft.map { " · يكفي \(fmtDuration(TimeInterval($0 * 60)))" } ?? "" : "")))
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }
+                if p.plugged, let loss = p.loss, loss >= 0.1 { legend(Color.secondary.opacity(0.6), L("Charger loss %@", w(loss))) }
+            }
+            if !battery.isEmpty {
+                Text(rtl(battery.joined(separator: " · "))).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
     }
 
-    private func legend(_ color: Color, _ title: String, _ value: String) -> some View {
+    private func legend(_ color: Color, _ text: String) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6).accessibilityHidden(true)
-            Text(rtl("\(title) \(value)")).font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(rtl(text)).font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder private func adviceCard(_ s: Snapshot) -> some View {
         if s.advice.isEmpty {
             Card {
-                Label("كل شيء طبيعي", systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
+                Label(L("All good"), systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
             }
         } else {
             Card {
-                sectionTitle("اقتراحات")
+                sectionTitle(L("Suggestions"))
                 ForEach(s.advice.prefix(3)) { a in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: a.level == .ok ? "lightbulb.fill" : "exclamationmark.triangle.fill")
@@ -1822,12 +2143,12 @@ struct PopoverView: View {
                         }
                         Spacer(minLength: 0)
                         if !a.killPids.isEmpty {
-                            Button("إنهاء") { model.confirmKill(a.title, detail: a.detail, pids: a.killPids) }.controlSize(.small)
+                            Button(L("Quit")) { model.confirmKill(a.title, detail: a.detail, pids: a.killPids) }.controlSize(.small)
                         }
                     }
                 }
                 if s.advice.count > 3 {
-                    Text("و\(s.advice.count - 3) أخرى — التفاصيل كاملة عبر: \(ltr("nabd doctor"))").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(rtl(L("%@ more — full details with %@", String(s.advice.count - 3), ltr("nabd doctor")))).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
         }
@@ -1839,21 +2160,22 @@ struct PopoverView: View {
         let waiting = g.paused.count
         let status: String
         if limit == 0 {
-            status = waiting > 0 ? "مطفأ. \(waiting) جلسة أوقفتَها أنت." : "مطفأ: لا إيقاف تلقائي."
+            status = waiting > 0 ? L("Off. Sessions you paused: %@.", String(waiting)) : L("Off: nothing is paused automatically.")
         } else if waiting > 0 {
-            status = "\(waiting) جلسة متوقفة مؤقتًا. تُكمل تلقائيًا عند نزول المعالج تحت \(ltr("\(limit - Int(Guard.margin))%"))، أو بعد 5 دقائق كحد أقصى."
+            status = L("Paused sessions: %@. They continue when the CPU drops below %@, or after 5 minutes at most.",
+                       String(waiting), ltr("\(limit - Int(Guard.margin))%"))
         } else {
-            status = "إذا بقي المعالج عند \(ltr("\(limit)%")) أو أكثر 12 ثانية، تتوقف أثقل جلسة \(ltr("Claude Code")) مؤقتًا وتُكمل حين يهدأ."
+            status = L("If the CPU stays at %@ or more for 12 seconds, the heaviest Claude Code session pauses until things calm down.", ltr("\(limit)%"))
         }
         return Card {
             HStack(spacing: 6) {
                 Image(systemName: limit > 0 ? "shield.lefthalf.filled" : "shield.slash")
                     .foregroundStyle(limit > 0 ? Color.green : Color.secondary)
                     .accessibilityHidden(true)
-                Text("الحارس").font(.system(size: 12, weight: .semibold))
+                Text(L("Guard")).font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Picker("الحد", selection: $model.guardLimit) {
-                    Text("مطفأ").tag(0)
+                Picker(L("Limit"), selection: $model.guardLimit) {
+                    Text(L("Off")).tag(0)
                     ForEach(model.limitChoices, id: \.self) { Text(ltr("\($0)%")).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -1865,8 +2187,8 @@ struct PopoverView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if waiting > 0 {
                 HStack {
-                    Button("عرض الجلسات") { section = 1 }.controlSize(.small)
-                    Button("أكمل الكل إجباريًا") { model.forceContinue(nil) }.controlSize(.small).keyboardShortcut(.defaultAction)
+                    Button(L("Show Sessions")) { section = 1 }.controlSize(.small)
+                    Button(L("Force Continue All")) { model.forceContinue(nil) }.controlSize(.small).keyboardShortcut(.defaultAction)
                     Spacer()
                 }
             }
@@ -1889,8 +2211,8 @@ struct PopoverView: View {
         HStack(spacing: 0) {
             sectionTitle(title)
             Spacer()
-            Text("معالج").frame(width: 46, alignment: .trailing)
-            Text("ذاكرة").frame(width: 60, alignment: .trailing)
+            Text(L("CPU")).frame(width: 46, alignment: .trailing)
+            Text(L("Memory")).frame(width: 60, alignment: .trailing)
             Spacer().frame(width: 50)
         }
         .font(.system(size: 10))
@@ -1901,9 +2223,9 @@ struct PopoverView: View {
     @ViewBuilder private func sessionsSection(_ s: Snapshot) -> some View {
         if let p = s.procs {
             VStack(alignment: .leading, spacing: 4) {
-                columnHeader(rtl("\(p.sessions.count) جلسات · \(p.mcpCount) خادم \(ltr("MCP"))"))
+                columnHeader(rtl(L("Sessions: %@ · MCP servers: %@", String(p.sessions.count), String(p.mcpCount))))
                 if p.sessions.isEmpty {
-                    Text("لا توجد جلسات Claude Code تعمل").font(.system(size: 12)).foregroundStyle(.secondary).padding(6)
+                    Text(L("No Claude Code sessions running")).font(.system(size: 12)).foregroundStyle(.secondary).padding(6)
                 }
                 ScrollView {
                     VStack(spacing: 2) {
@@ -1918,7 +2240,7 @@ struct PopoverView: View {
                         HStack(spacing: 8) {
                             Image(nsImage: NSWorkspace.shared.icon(forFile: "/Applications/Claude.app"))
                                 .resizable().frame(width: 16, height: 16).accessibilityHidden(true)
-                            Text("تطبيق Claude · \(d.pids.count) عملية").font(.system(size: 12))
+                            Text(rtl(L("Claude app · %@ processes", String(d.pids.count)))).font(.system(size: 12))
                         }
                         Spacer(minLength: 4)
                         numbers(cpu: d.cpu, mem: d.mem)
@@ -1949,13 +2271,13 @@ struct PopoverView: View {
             numbers(cpu: x.cpu, mem: x.mem)
             HStack(spacing: 2) {
                 if pause != nil {
-                    IconButton(symbol: "play.fill", label: "أكمل إجباريًا (لا تُوقف مجددًا لمدة 15 دقيقة)", tint: .green) { model.forceContinue(x.id) }
+                    IconButton(symbol: "play.fill", label: L("Force continue (won't pause again for 15 minutes)"), tint: .green) { model.forceContinue(x.id) }
                 } else {
-                    IconButton(symbol: "pause.fill", label: "أوقف مهام هذه الجلسة مؤقتًا حتى أكملها بنفسي") { model.pause(x.id) }
+                    IconButton(symbol: "pause.fill", label: L("Pause this session's work until you continue it")) { model.pause(x.id) }
                 }
-                IconButton(symbol: "xmark", label: "إنهاء الجلسة") {
-                    model.confirmKill("جلسة Claude Code «\(x.label)»",
-                                      detail: "ستُغلق الجلسة مع \(x.pids.count - 1) عملية تابعة لها. المحادثة محفوظة ويمكن استئنافها لاحقًا.",
+                IconButton(symbol: "xmark", label: L("Quit session")) {
+                    model.confirmKill(L("Claude Code session “%@”", x.label),
+                                      detail: L("The session closes along with the processes it started (%@). The conversation is saved and can be resumed.", String(x.pids.count - 1)),
                                       pids: x.pids)
                 }
             }
@@ -1967,15 +2289,15 @@ struct PopoverView: View {
     private func subtitle(_ x: ClaudeSession, pause: Guard.Paused?) -> String {
         if let pause {
             let waited = max(0, Int(Date().timeIntervalSince(pause.since)))
-            let since = waited < 60 ? "\(waited)ث" : fmtDuration(TimeInterval(waited))
-            if pause.manual { return "أوقفتَها أنت منذ \(since) · تنتظر زر الإكمال" }
-            return "متوقفة مؤقتًا منذ \(since) · " + (pause.hot ? "حتى يبرد الجهاز" : "حتى يهدأ المعالج")
+            let since = waited < 60 ? L("%@ s", String(waited)) : fmtDuration(TimeInterval(waited))
+            if pause.manual { return L("Paused by you %@ ago · waiting for you to continue", since) }
+            return L("Paused %@ ago · ", since) + (pause.hot ? L("until the Mac cools down") : L("until the CPU calms down"))
         }
-        var parts = ["منذ \(fmtDuration(x.elapsed))", ltr("MCP \(x.mcpCount)")]
-        if let top = x.topName { parts.append("الأثقل \(ltr("\(top) \(fmtPct(x.topCPU))"))") }
-        if x.idle { parts.append(x.quietFor > 600 ? "خاملة منذ \(fmtDuration(x.quietFor))" : "خاملة") }
-        if model.guardStatus.exempt.contains(x.id) { parts.append("مستثناة من الإيقاف") }
-        if x.calm { parts.append("أولوية خلفية (بطيئة)") }
+        var parts = [L("Up %@", fmtDuration(x.elapsed)), ltr("MCP \(x.mcpCount)")]
+        if let top = x.topName { parts.append(L("Heaviest %@", ltr("\(top) \(fmtPct(x.topCPU))"))) }
+        if x.idle { parts.append(x.quietFor > 600 ? L("Idle for %@", fmtDuration(x.quietFor)) : L("Idle")) }
+        if model.guardStatus.exempt.contains(x.id) { parts.append(L("Won't be paused")) }
+        if x.calm { parts.append(L("Background priority (slow)")) }
         return parts.joined(separator: " · ")
     }
 
@@ -1994,30 +2316,31 @@ struct PopoverView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Picker("", selection: $tab) {
-                        Text("المعالج").tag(0)
-                        Text("الذاكرة").tag(1)
-                        Text("خدمات الخلفية").tag(2)
+                        Text(L("CPU")).tag(0)
+                        Text(L("Memory")).tag(1)
+                        Text(L("Dev Services")).tag(2)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .controlSize(.small)
                     .fixedSize()
                     Spacer()
-                    Text("\(p.total) عملية").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(L("%@ processes", String(p.total))).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                columnHeader("البرنامج")
+                columnHeader(L("App"))
                 ForEach(rows) { g in
                     HStack(spacing: 8) {
                         Text(ltr(g.name + (g.pids.count > 1 ? " ×\(g.pids.count)" : ""))).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
-                        if g.calm { Image(systemName: "leaf.fill").font(.system(size: 9)).foregroundStyle(.green).accessibilityLabel("أولوية خلفية") }
+                        if g.calm { Image(systemName: "leaf.fill").font(.system(size: 9)).foregroundStyle(.green).accessibilityLabel(L("Background priority")) }
                         Spacer(minLength: 4)
                         numbers(cpu: g.cpu, mem: g.mem)
                         HStack(spacing: 2) {
                             if g.mine, !ProcessScanner.protected.contains(g.name), g.name != "Claude Code" {
-                                IconButton(symbol: g.calm ? "leaf.fill" : "leaf", label: g.calm ? "أعد السرعة الكاملة" : "هدّئ: انقلها إلى أنوية الكفاءة (أبرد وأبطأ)",
+                                IconButton(symbol: g.calm ? "leaf.fill" : "leaf",
+                                           label: g.calm ? L("Back to full speed") : L("Calm: move to the efficiency cores (cooler, slower)"),
                                            tint: g.calm ? .green : .secondary) { model.toggleCalm(g.pids, isCalm: g.calm) }
-                                IconButton(symbol: "xmark", label: "إنهاء") {
-                                    model.confirmKill(g.name, detail: "سيُرسل طلب إنهاء إلى \(g.pids.count) عملية. احفظ عملك فيها أولًا.", pids: g.pids)
+                                IconButton(symbol: "xmark", label: L("Quit")) {
+                                    model.confirmKill(g.name, detail: L("A quit request goes to every process in it (%@). Save your work first.", String(g.pids.count)), pids: g.pids)
                                 }
                             }
                         }
@@ -2025,11 +2348,37 @@ struct PopoverView: View {
                     }
                     .modifier(HoverRow())
                 }
-                if rows.isEmpty { Text("لا توجد خدمات تعمل").font(.system(size: 11)).foregroundStyle(.secondary).padding(6) }
-                Text(rtl("المعالج: \(ltr("100%")) = نواة واحدة كاملة")).font(.system(size: 9)).foregroundStyle(.tertiary).padding(.horizontal, 6)
+                if rows.isEmpty { Text(L("No services running")).font(.system(size: 11)).foregroundStyle(.secondary).padding(6) }
+                Text(rtl(L("CPU: %@ = one full core", ltr("100%")))).font(.system(size: 9)).foregroundStyle(.tertiary).padding(.horizontal, 6)
             }
         } else {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding()
+        }
+    }
+
+    // MARK: History
+
+    private var historySection: some View {
+        let points = model.history
+        let last = points.last
+        let pct = { (v: Double?) in v.map { ltr(fmtPct($0)) } ?? "—" }
+        return VStack(alignment: .leading, spacing: 12) {
+            if points.count < 3 {
+                Text(L("Collecting readings… the charts fill in over the next minutes.")).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            MiniChart(title: L("CPU and GPU"), current: rtl(L("CPU %@ · GPU %@", pct(last?.cpu), pct(last?.gpu))), points: points,
+                      series: [(L("CPU"), Color.accentColor, { $0.cpu }), (L("GPU"), Color.purple, { $0.gpu })], domain: 0...100)
+            MiniChart(title: L("Temperature"), current: last?.temp.map { ltr(String(format: "%.0f°", $0)) } ?? "—", points: points,
+                      series: [(L("Temperature"), Color.orange, { $0.temp })])
+            MiniChart(title: L("Memory"), current: pct(last?.mem), points: points,
+                      series: [(L("Memory"), Color.teal, { $0.mem })], domain: 0...100)
+            if points.contains(where: { $0.power != nil }) {
+                MiniChart(title: L("Power"), current: last?.power.map { ltr(String(format: "%.0fW", $0)) } ?? "—", points: points,
+                          series: [(L("Power"), Color.yellow, { $0.power })])
+            }
+            MiniChart(title: L("Network"), current: ltr("↓\(last?.netIn.map { fmtRate($0) } ?? "—")  ↑\(last?.netOut.map { fmtRate($0) } ?? "—")"), points: points,
+                      series: [("↓", Color.accentColor, { $0.netIn.map { $0 / 1_048_576 } }), ("↑", Color.green, { $0.netOut.map { $0 / 1_048_576 } })])
+            Text(L("Last 30 minutes · network in MB/s")).font(.system(size: 9)).foregroundStyle(.tertiary)
         }
     }
 }
@@ -2049,8 +2398,8 @@ struct ToastView: View {
                 Text(rtl(title)).font(.system(size: 13, weight: .semibold))
                 Text(rtl(message)).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
-                    Button("أكمل إجباريًا", action: onContinue)
-                    Button("إخفاء", action: onDismiss)
+                    Button(L("Force Continue"), action: onContinue)
+                    Button(L("Dismiss"), action: onDismiss)
                 }
                 .controlSize(.small)
                 .padding(.top, 4)
@@ -2061,7 +2410,7 @@ struct ToastView: View {
         .frame(width: 350)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.12)))
-        .environment(\.layoutDirection, .rightToLeft)
+        .environment(\.layoutDirection, isRTL ? .rightToLeft : .leftToRight)
     }
 }
 
@@ -2171,7 +2520,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if s.level != .ok || paused > 0 { attributes[.foregroundColor] = s.level == .crit ? NSColor.systemRed : NSColor.systemOrange }
         button.image = NSImage(systemSymbolName: paused > 0 ? "pause.circle.fill" : "waveform.path.ecg",
                                accessibilityDescription: paused > 0 ? "Nabd: \(paused) paused" : "Nabd")
-        button.attributedTitle = NSAttributedString(string: " " + CLI.line(s, compact: model.compact), attributes: attributes)
+        let text = model.barText
+        button.imagePosition = text.isEmpty ? .imageOnly : .imageLeading
+        button.attributedTitle = NSAttributedString(string: text.isEmpty ? "" : " " + text, attributes: attributes)
     }
 
     // MARK: Notifications
@@ -2179,7 +2530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func setUpNotifications() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        let proceed = UNNotificationAction(identifier: "continue", title: "أكمل إجباريًا", options: [])
+        let proceed = UNNotificationAction(identifier: "continue", title: L("Force Continue"), options: [])
         center.setNotificationCategories([UNNotificationCategory(identifier: "paused", actions: [proceed], intentIdentifiers: [])])
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
             // Readable with `defaults read local.nabd.monitor notifications`.
@@ -2193,11 +2544,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func announce(_ item: Guard.Paused, label: String, cpu: Double) {
         // `defaults write local.nabd.monitor muteAlerts -bool true` keeps the guard working silently.
         if UserDefaults.standard.bool(forKey: "muteAlerts") { return }
-        let title = "نبض أوقف جلسة مؤقتًا"
-        let body = (item.hot ? "الجهاز ساخن." : "المعالج وصل \(ltr("\(Int(cpu.rounded()))%")).") + " تُكمل تلقائيًا عندما يهدأ الجهاز، أو اختر «أكمل إجباريًا»."
+        let title = L("Nabd paused a session")
+        let body = (item.hot ? L("The Mac is hot.") : L("The CPU reached %@.", ltr("\(Int(cpu.rounded()))%"))) + " " + L("It continues when things calm down, or choose Force Continue.")
         guard notificationsAllowed else {
             let root = item.root
-            return toast.show(title: title, message: "«\(ltr(label))»: " + body) { [weak self] in self?.model.forceContinue(root) }
+            return toast.show(title: title, message: L("“%@”: ", ltr(label)) + body) { [weak self] in self?.model.forceContinue(root) }
         }
         let content = UNMutableNotificationContent()
         content.title = title
@@ -2250,7 +2601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             let host = NSHostingController(rootView: PopoverView(model: model))
             host.sizingOptions = [.preferredContentSize]
             let w = NSWindow(contentViewController: host)
-            w.title = "نبض"
+            w.title = L("Nabd")
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.delegate = self
@@ -2318,8 +2669,21 @@ enum Main {
                          ProcGroup(name: "Claude Code", cpu: 6, mem: UInt64(1.6 * Double(gb)), pids: Array(1...4), mine: true),
                          ProcGroup(name: "mysqld", cpu: 2, mem: UInt64(0.5 * Double(gb)), pids: [1], mine: true),
                          ProcGroup(name: "redis-server", cpu: 0.4, mem: 8 * 1_048_576, pids: [1], mine: true)]
+        s.gpu = 22
+        s.netIn = 1.4 * 1_048_576; s.netOut = 180 * 1024
+        s.diskRead = 12 * 1_048_576; s.diskWrite = 3.4 * 1_048_576
+        s.diskFree = 212 * gb; s.diskTotal = 494 * gb
+        s.power?.health = 91; s.power?.cycles = 212
         s.procs = report
         s.advice = Advisor.advise(s)
+        // Half an hour of made-up history with a build spike in the middle.
+        let start = Date().addingTimeInterval(-1800)
+        model.history = (0..<300).map { i in
+            let t = Double(i) / 300, spike = exp(-pow((t - 0.55) * 9, 2))
+            return HistoryPoint(time: start.addingTimeInterval(Double(i) * 6), cpu: 30 + 55 * spike + 6 * sin(Double(i) / 7), gpu: 15 + 10 * sin(Double(i) / 11),
+                                temp: 55 + 22 * spike, mem: 66 + 4 * t, power: 28 + 45 * spike, netIn: (0.6 + 0.8 * abs(sin(Double(i) / 9))) * 1_048_576,
+                                netOut: (0.1 + 0.15 * abs(cos(Double(i) / 13))) * 1_048_576)
+        }
         model.snap = s
         model.powerPeak = 78
         model.energyToday = 186
@@ -2340,7 +2704,7 @@ enum Main {
             model.guardStatus = Guard.Status(cpu: 62, paused: paused, exempt: sessions.dropFirst(2).prefix(1).map(\.id))
         }
         let view: NSView = demo == "toast"
-            ? NSHostingView(rootView: ToastView(title: "نبض أوقف جلسة مؤقتًا", message: "«\(ltr("my-project"))»: المعالج وصل \(ltr("97%")). تُكمل تلقائيًا عندما يهدأ الجهاز، أو اختر «أكمل إجباريًا».", onContinue: {}, onDismiss: {}).padding(12).background(Color(nsColor: .windowBackgroundColor)))
+            ? NSHostingView(rootView: ToastView(title: L("Nabd paused a session"), message: L("“%@”: ", "my-project") + L("The CPU reached %@.", "97%") + " " + L("It continues when things calm down, or choose Force Continue."), onContinue: {}, onDismiss: {}).padding(12).background(Color(nsColor: .windowBackgroundColor)))
             : NSHostingView(rootView: PopoverView(model: model, initialTab: tab).background(Color(nsColor: .windowBackgroundColor)))
         view.frame = NSRect(origin: .zero, size: view.fittingSize)
         let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
