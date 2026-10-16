@@ -59,8 +59,23 @@ process and its MCP servers are never touched, so the agent itself stays respons
 
 ## Install
 
-Requires macOS 13+ and Xcode or the Command Line Tools (`xcode-select --install`). Built and tested on an
-Apple Silicon Mac (M1 Pro); Intel Macs should work but are untested.
+### Download (easiest)
+
+1. Download **[Nabd.dmg](https://github.com/amjadArqan/nabd/releases/latest/download/Nabd.dmg)** from the
+   [latest release](https://github.com/amjadArqan/nabd/releases/latest) and drag **Nabd** into **Applications**.
+2. Open it. Nabd isn't notarized by Apple, so the first time macOS blocks it: open
+   **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. Or, in Terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Nabd.app
+   ```
+
+One universal app for Apple Silicon and Intel, macOS 13 or later. Developed and tested on an M1 Pro running
+the latest macOS; Intel Macs and older macOS versions are untested.
+
+### Build from source
+
+Needs Xcode or the Command Line Tools (`xcode-select --install`).
 
 ```bash
 git clone https://github.com/amjadArqan/nabd.git
@@ -69,6 +84,8 @@ cd nabd
 cp -R Nabd.app /Applications/
 open /Applications/Nabd.app
 ```
+
+`./release.sh` builds the universal app and packs `dist/Nabd.dmg` and `dist/Nabd.zip`.
 
 Nabd has no Dock icon: look for the pulse icon and readings in the menu bar. From the ⚙︎ menu you can open it in a
 window and turn on **start with the Mac** (or run `nabd login on`). Opening Nabd again from Applications or

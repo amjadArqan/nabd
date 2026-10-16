@@ -2,3 +2,4 @@ Nabd.app/
 nabd
 .claude/
 .DS_Store
+dist/
