@@ -3453,6 +3453,9 @@ enum Main {
         case "line": print(CLI.line(CLI.snapshot()))
         case "json": CLI.json()
         case "sensors": CLI.sensors()
+        case "smc":  // read raw SMC keys, for diagnostics: nabd smc F0Md F0Tg
+            guard let smc = SMC() else { return print("SMC unavailable") }
+            for key in args.dropFirst() { print(key, smc.read(SMC.fourCC(key)).map { String(format: "%.2f", $0) } ?? "n/a") }
         case "guard": CLI.guardReport(limit: args.count > 1 ? Int(args[args.startIndex + 1]) ?? 90 : 90)
         case "continue": CLI.forceContinue()
         case "log": CLI.guardLog()

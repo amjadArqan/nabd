@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.png" width="128" alt="Nabd logo: a gauge ring shading from cool cyan to hot orange around a white pulse line">
+
 # Nabd
 
 **Your Mac's pulse in the menu bar — and a guard that keeps heavy Claude Code and Codex sessions from cooking it.**

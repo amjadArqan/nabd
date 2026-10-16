@@ -21,6 +21,7 @@ cp Info.plist "$APP/Contents/Info.plist"
 # Translations: one Localizable.strings per language, picked by macOS from the user's preferred languages.
 rm -rf "$APP/Contents/Resources" && mkdir -p "$APP/Contents/Resources"
 cp -R Localization/*.lproj "$APP/Contents/Resources/"
+cp Nabd.icns "$APP/Contents/Resources/Nabd.icns"
 codesign --force --sign - "$APP" 2>/dev/null
 ln -sf "$APP/Contents/MacOS/Nabd" nabd
 echo "Built $APP — run: open $APP   or   ./nabd status"
