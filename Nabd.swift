@@ -1294,6 +1294,7 @@ enum CLI {
 
           nabd                 menu bar app (same as: open Nabd.app)
           nabd open            menu bar app with the panel already open
+          nabd window          menu bar app with the panel in a window
           nabd status          full report in the terminal
           nabd doctor          advice only
           nabd line            one line: 59°  CPU 42%  RAM 71%
@@ -1350,6 +1351,8 @@ final class Model: ObservableObject {
     @Published var guardStatus = Guard.Status()
     /// Called on the main thread for each session the guard has just paused on its own.
     var onPause: ((Guard.Paused, String, Double) -> Void)?
+    /// Opens the panel as a regular window.
+    var onOpenWindow: (() -> Void)?
     private let guardian = Guard()
     private let guardQueue = DispatchQueue(label: "nabd.guard", qos: .userInitiated)
     private var guardTimer: DispatchSourceTimer?
@@ -1692,6 +1695,7 @@ struct PopoverView: View {
             Toggle("عرض مختصر في شريط القوائم", isOn: $model.compact)
             Toggle("تشغيل مع الجهاز", isOn: Binding(get: { model.loginItem }, set: { model.setLoginItem($0) }))
             Divider()
+            Button("فتح في نافذة") { model.onOpenWindow?() }
             Button("فتح مراقب النشاط") {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
             }
@@ -2107,13 +2111,14 @@ final class Toast {
 
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
     private let model = Model()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var activity: NSObjectProtocol?
     private var termination: DispatchSourceSignal?
     private let toast = Toast()
+    private var window: NSWindow?
     private var notificationsAllowed = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -2136,12 +2141,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         popover.delegate = self
         model.onUpdate = { [weak self] in self?.updateTitle() }
         model.onPause = { [weak self] item, label, cpu in self?.announce(item, label: label, cpu: cpu) }
+        model.onOpenWindow = { [weak self] in self?.openWindow() }
         setUpNotifications()
         // `nabd continue` from a terminal.
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("local.nabd.monitor.continue"), object: nil, queue: .main) { [weak self] _ in
             self?.model.forceContinue(nil)
         }
         model.start()
+        // `nabd window` starts the app with its window open.
+        if CommandLine.arguments.contains("window") { DispatchQueue.main.async { self.openWindow() } }
         // `nabd open` starts the app with its panel already showing.
         guard CommandLine.arguments.contains("open") else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
@@ -2229,8 +2237,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
 
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
+    /// Opening Nabd again from Applications, Launchpad or Spotlight while it runs shows the window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openWindow()
+        return true
+    }
+
+    /// The same panel in an ordinary window, with a Dock icon while it is open.
+    func openWindow() {
+        popover.performClose(nil)
+        if window == nil {
+            let host = NSHostingController(rootView: PopoverView(model: model))
+            host.sizingOptions = [.preferredContentSize]
+            let w = NSWindow(contentViewController: host)
+            w.title = "نبض"
+            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            if !w.setFrameUsingName("NabdWindow") { w.center() }
+            w.setFrameAutosaveName("NabdWindow")
+            window = w
+        }
+        NSApp.setActivationPolicy(.regular)
+        model.popoverOpen = true
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil  // the SwiftUI tree goes with it, as with the popover
+        NSApp.setActivationPolicy(.accessory)
+        model.popoverOpen = popover.isShown
+    }
+
+    /// Dragging the popover away from the menu bar turns it into a floating window.
+    func popoverShouldDetach(_ popover: NSPopover) -> Bool { true }
+
     func popoverDidClose(_ notification: Notification) {
-        model.popoverOpen = false
+        model.popoverOpen = window != nil
         popover.contentViewController = nil
     }
 }
@@ -2245,13 +2289,50 @@ enum Main {
         withExtendedLifetime(delegate) { app.run() }
     }
 
+    /// Invented readings for README screenshots, so no real project or app names end up in them.
+    static func fillDemo(_ model: Model) {
+        let gb: UInt64 = 1_073_741_824
+        var s = Snapshot()
+        s.cpuTotal = 46; s.cpuP = 38; s.cpuE = 80; s.load = [6.2, 7.1, 6.8]; s.ncpu = 10
+        s.mem = MemInfo(total: 16 * gb, app: 6 * gb, wired: 2 * gb, compressed: 3 * gb, cached: 2 * gb, swapUsed: 2 * gb, swapTotal: 4 * gb, pressure: 1)
+        s.temps = Temps(cpu: 64, cpuMax: 72, gpu: 52, battery: 33, ssd: 38, fans: [Fan(rpm: 2600, min: 1500, max: 4300)])
+        s.uptime = 2 * 86400 + 3 * 3600
+        s.power = PowerInfo(plugged: true, charging: true, adapterWatts: 140, adapterName: "140W USB-C Power Adapter",
+                            input: 41.2, system: 33.6, battery: 6.8, loss: 0.8, percent: 86)
+        func session(_ id: Int32, _ label: String, hours: Double, cpu: Double, mem: Double, mcp: Int, top: String? = nil, topCPU: Double = 0, idle: Bool = false) -> ClaudeSession {
+            ClaudeSession(id: id, label: label, cwd: "/Users/me/code/\(label)", elapsed: hours * 3600, cpu: cpu, mem: UInt64(mem * Double(gb)),
+                          pids: [id], mcpCount: mcp, topName: top, topCPU: topCPU, quietFor: idle ? 7200 : 0, idle: idle)
+        }
+        var report = ProcReport(total: 642)
+        report.sessions = [session(9001, "my-saas-app", hours: 5.2, cpu: 112, mem: 1.4, mcp: 2, top: "php", topCPU: 96),
+                           session(9002, "landing-page", hours: 1.1, cpu: 8, mem: 0.6, mcp: 1),
+                           session(9003, "api-server", hours: 3.4, cpu: 0, mem: 0.7, mcp: 2),
+                           session(9004, "docs", hours: 26, cpu: 0, mem: 0.4, mcp: 1, idle: true)]
+        report.mcpCount = 6
+        report.mcpMem = UInt64(0.4 * Double(gb))
+        report.groups = [ProcGroup(name: "Arc", cpu: 18, mem: 3 * gb, pids: Array(1...24), mine: true),
+                         ProcGroup(name: "php", cpu: 104, mem: UInt64(0.9 * Double(gb)), pids: Array(1...6), mine: true),
+                         ProcGroup(name: "Claude", cpu: 22, mem: UInt64(2.1 * Double(gb)), pids: Array(1...28), mine: true),
+                         ProcGroup(name: "WindowServer", cpu: 31, mem: UInt64(0.1 * Double(gb)), pids: [1], mine: false),
+                         ProcGroup(name: "node", cpu: 12, mem: UInt64(0.8 * Double(gb)), pids: Array(1...9), mine: true),
+                         ProcGroup(name: "Claude Code", cpu: 6, mem: UInt64(1.6 * Double(gb)), pids: Array(1...4), mine: true),
+                         ProcGroup(name: "mysqld", cpu: 2, mem: UInt64(0.5 * Double(gb)), pids: [1], mine: true),
+                         ProcGroup(name: "redis-server", cpu: 0.4, mem: 8 * 1_048_576, pids: [1], mine: true)]
+        s.procs = report
+        s.advice = Advisor.advise(s)
+        model.snap = s
+        model.powerPeak = 78
+        model.energyToday = 186
+        model.guardStatus = Guard.Status(cpu: 46, paused: [Guard.Paused(root: 9003, since: Date().addingTimeInterval(-42), manual: false, hot: false)])
+    }
+
     /// Renders the popover offscreen to a PNG, for checking the layout without opening the menu.
     static func renderSnapshot(to path: String, dark: Bool, tab: Int, demo: String?) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         let model = Model()
-        model.fillSynchronously(samples: demo == "toast" ? 1 : 8)
+        if demo == "readme" { fillDemo(model) } else { model.fillSynchronously(samples: demo == "toast" ? 1 : 8) }
         // Demo states exist only for these renders: they show a layout without pausing anything for real.
         if demo == "paused", let sessions = model.snap.procs?.sessions, let first = sessions.first {
             var paused = [Guard.Paused(root: first.id, since: Date().addingTimeInterval(-42), manual: false, hot: false)]
@@ -2275,7 +2356,7 @@ enum Main {
     static func run() {
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-psn") }
         switch args.first {
-        case nil, "open": runApp()
+        case nil, "open", "window": runApp()
         case "status": CLI.status()
         case "doctor": CLI.printAdvice(CLI.snapshot())
         case "line": print(CLI.line(CLI.snapshot()))
