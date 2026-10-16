@@ -17,6 +17,8 @@ Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code s
 
 </div>
 
+<p align="center"><img src="docs/window.png" width="780" alt="Nabd's desktop window: a sidebar with Overview, CPU and GPU, Memory, Network, Disk, Power and Battery, Sensors, Claude Code and Clean Up; the overview shows rings, power, the guard and suggestions"></p>
+
 ## Features
 
 | | |
@@ -31,11 +33,22 @@ Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code s
 | **Suggestions** | Plain-language hints: fans at full speed, swap too high, disk almost full, idle sessions, a charger too weak for the load… |
 | **Guard** | Pauses the heaviest Claude Code session when the CPU stays at your limit, then lets it continue. |
 | **Your menu bar** | Choose what shows next to the icon: temperature, CPU, GPU, memory, network, power — or just the icon. |
-| **Menu bar or window** | A popover from the menu bar, or the same panel in a normal window. |
+| **Desktop window** | A full window with a sidebar: per-core CPU bars, where memory goes, large 30-minute charts, every temperature sensor and fan, Claude Code sessions with the guard log. |
+| **Clean Up** | Frees space from developer caches — npm, Yarn, pnpm, Homebrew, Composer, uv, pip, Xcode — using each tool's own clean command, and moves other cache folders to the Trash so they can be put back. |
 | **10 languages** | English, العربية, Deutsch, Español, Français, 日本語, 한국어, Português (Brasil), Русский, 简体中文 — follows your Mac's language, right-to-left included. |
 | **Updates** | Checks GitHub once a day and shows a small *Update* button when a new version is out (can be turned off). |
 
 <p align="center"><img src="docs/sessions.png" width="380" alt="Nabd sessions tab: Claude Code sessions with pause and continue buttons">&nbsp;&nbsp;<img src="docs/arabic.png" width="380" alt="Nabd in Arabic, laid out right to left"></p>
+
+<p align="center"><img src="docs/window-cpu.png" width="780" alt="Nabd's CPU and GPU page: per-core bars for efficiency and performance cores, and a 30-minute chart"></p>
+
+## Clean Up
+
+Open the window (⚙︎ → **Open in Window**) and choose **Clean Up**. Nabd measures known caches and pre-selects the
+ones tools rebuild on their own; app caches and folders in `~/.cache` are listed but left unticked. It never lists
+app data, documents, Claude conversations, Xcode archives, or anything that looks like a project (a git checkout, an
+`.env` file, a package manifest). Folders go to the Trash; npm, pnpm, Homebrew, Composer and uv are cleaned with their
+own commands. You confirm before anything happens.
 
 ## The guard
 
