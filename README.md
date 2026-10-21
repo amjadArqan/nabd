@@ -36,6 +36,8 @@ Temperature · CPU · GPU · Memory · Network · Disk · Power · Claude Code &
 | **Guard** | Pauses the heaviest Claude Code or Codex session when the CPU stays at your limit, then lets it continue. |
 | **Your menu bar** | Choose what shows next to the icon: temperature, CPU, GPU, memory, network, power — or just the icon. |
 | **Desktop window** | A full window with a sidebar: per-core CPU bars, where memory goes, large 30-minute charts, every temperature sensor and fan, Claude Code and Codex sessions with the guard log. |
+| **Storage** | Free space, the largest folders (Downloads, caches, Xcode, Trash) and every Git worktree on your Mac, grouped by project — the ones AI sessions leave behind. Each shows its size, uncommitted changes, whether its branch is merged and when it was last used; clean, unused ones can be moved to the Trash. |
+| **Usage** | Which apps used the CPU in the last hour, today and over 7 days, kept on your Mac. |
 | **Clean Up** | Frees space from developer caches — npm, Yarn, pnpm, Homebrew, Composer, uv, pip, Xcode — using each tool's own clean command, and moves other cache folders to the Trash so they can be put back. |
 | **10 languages** | English, العربية, Deutsch, Español, Français, 日本語, 한국어, Português (Brasil), Русский, 简体中文 — follows your Mac's language, right-to-left included. |
 | **Updates** | Checks GitHub once a day and shows a small *Update* button when a new version is out (can be turned off). |
@@ -51,6 +53,15 @@ ones tools rebuild on their own; app caches and folders in `~/.cache` are listed
 app data, documents, Claude conversations, Xcode archives, or anything that looks like a project (a git checkout, an
 `.env` file, a package manifest). Folders go to the Trash; npm, pnpm, Homebrew, Composer and uv are cleaned with their
 own commands. You confirm before anything happens.
+
+## Storage and worktrees
+
+Claude Code, Codex and other agents often create a Git worktree per task, each with its own `node_modules` or `vendor`,
+and they add up quickly. **Storage** in the window finds them in your home folder (and XAMPP's `htdocs`) and shows, per
+worktree, its size, uncommitted changes, whether the branch is merged and when it was last used. Only worktrees with no
+uncommitted changes and no running session can be selected; **Select Merged, Unused 7+ Days** picks the safe ones.
+Nabd checks again with `git status` before moving anything, moves the folders to the Trash and runs `git worktree prune` —
+branches and commits stay. Nabd scans on its own every 6 hours and suggests a clean-up when worktrees pass 10 GB.
 
 ## The guard
 
@@ -113,6 +124,8 @@ The app binary doubles as a CLI: `/Applications/Nabd.app/Contents/MacOS/Nabd <co
 | `nabd sensors` | Raw temperature sensors and fans |
 | `nabd guard [limit]` | What the guard sees right now (dry run) |
 | `nabd continue` | Force-continue every paused session |
+| `nabd top [hours]` | Apps that used the most CPU over the last hours (default 24) |
+| `nabd storage` | Free space, large folders and Git worktrees by state |
 | `nabd log` | Recent guard pauses and continues, with reasons |
 | `nabd login [on\|off]` | Start at login |
 | `nabd window` | Launch with the panel in a window |
@@ -133,7 +146,7 @@ in `Info.plist`.
 - **Network, disk** — interface counters (`getifaddrs`) and `IOBlockStorageDriver` statistics.
 - **Power and battery health** — the `AppleSmartBattery` registry entry.
 - **Processes** — `ps` and libproc. Nabd only ever signals processes owned by you.
-- One Swift file, no dependencies. Idle cost is about 0.5% of one core and ~50 MB of memory.
+- A few Swift files, no dependencies. Idle cost is about 0.5% of one core and ~50 MB of memory.
 
 ## Ideas for later
 

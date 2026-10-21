@@ -1,4 +1,4 @@
-/* English is the base language: every key is its own English text. */
+/* English (base). Keys are the English strings. */
 
 "Normal" = "Normal";
 "Warm" = "Warm";
@@ -64,6 +64,8 @@
 "The disk is standing in for memory, which slows switching between apps. Largest: %@." = "The disk is standing in for memory, which slows switching between apps. Largest: %@.";
 "The disk is almost full (%@ free)" = "The disk is almost full (%@ free)";
 "macOS needs free space for swap and updates. Empty the Trash, or clear caches such as node_modules and Docker images." = "macOS needs free space for swap and updates. Empty the Trash, or clear caches such as node_modules and Docker images.";
+"Git worktrees take %@ (%@)" = "Git worktrees take %@ (%@)";
+"AI sessions leave a worktree per task. Review them in Nabd's window → Storage; clean, merged ones can go to the Trash." = "AI sessions leave a worktree per task. Review them in Nabd's window → Storage; clean, merged ones can go to the Trash.";
 "The battery drains while plugged in" = "The battery drains while plugged in";
 "The Mac draws %@ more than the charger (%@) supplies. Use a stronger charger or lighten the load." = "The Mac draws %@ more than the charger (%@) supplies. Use a stronger charger or lighten the load.";
 "Probably stuck: %@" = "Probably stuck: %@";
@@ -175,6 +177,7 @@
 "Sensors" = "Sensors";
 "AI Agents" = "AI Agents";
 "Clean Up" = "Clean Up";
+"Usage" = "Usage";
 "Tools" = "Tools";
 "%@ free" = "%@ free";
 "Performance %@ · Efficiency %@" = "Performance %@ · Efficiency %@";
@@ -196,6 +199,7 @@
 "MB/s" = "MB/s";
 "Running low on space? Clean Up frees caches that tools rebuild on their own." = "Running low on space? Clean Up frees caches that tools rebuild on their own.";
 "Open Clean Up" = "Open Clean Up";
+"Open Storage" = "Open Storage";
 "Now" = "Now";
 "from the wall" = "from the wall";
 "from the battery" = "from the battery";
@@ -222,3 +226,36 @@
 "The CPU reached %@." = "The CPU reached %@.";
 "It continues when things calm down, or choose Force Continue." = "It continues when things calm down, or choose Force Continue.";
 "“%@”: " = "“%@”: ";
+"Downloads" = "Downloads";
+"Trash" = "Trash";
+"Xcode and simulators" = "Xcode and simulators";
+"Caches" = "Caches";
+"iPhone backups" = "iPhone backups";
+"Move %@ worktrees to the Trash?" = "Move %@ worktrees to the Trash?";
+"They take %@. Their branches and commits stay in the repository; only the working folders go, and you can put them back from the Trash." = "They take %@. Their branches and commits stay in the repository; only the working folders go, and you can put them back from the Trash.";
+"Move to Trash" = "Move to Trash";
+"Moved %@ to the Trash. Empty the Trash to get the space back." = "Moved %@ to the Trash. Empty the Trash to get the space back.";
+"Skipped: %@." = "Skipped: %@.";
+"Measured %@ ago" = "Measured %@ ago";
+"Large folders" = "Large folders";
+"Measuring…" = "Measuring…";
+"Git worktrees" = "Git worktrees";
+"%@ worktrees · %@" = "%@ worktrees · %@";
+"Select Merged, Unused 7+ Days" = "Select Merged, Unused 7+ Days";
+"Move Selected to Trash…" = "Move Selected to Trash…";
+"AI sessions often leave a worktree per task, each with its own node_modules or vendor. Only worktrees with no uncommitted changes and no running session can be selected. Branches and commits stay; folders go to the Trash." = "AI sessions often leave a worktree per task, each with its own node_modules or vendor. Only worktrees with no uncommitted changes and no running session can be selected. Branches and commits stay; folders go to the Trash.";
+"Selected: %@ (%@)" = "Selected: %@ (%@)";
+"Some worktrees point to folders that no longer exist." = "Some worktrees point to folders that no longer exist.";
+"Clean Up List" = "Clean Up List";
+"%@ worktrees" = "%@ worktrees";
+"used %@ ago" = "used %@ ago";
+"open in a session" = "open in a session";
+"uncommitted changes" = "uncommitted changes";
+"merged" = "merged";
+"folder missing" = "folder missing";
+"Who used the CPU" = "Who used the CPU";
+"Last hour" = "Last hour";
+"Today" = "Today";
+"7 days" = "7 days";
+"CPU time each app used while Nabd was running. One hour of CPU means one core busy for an hour." = "CPU time each app used while Nabd was running. One hour of CPU means one core busy for an hour.";
+"Collecting… check back in a few minutes." = "Collecting… check back in a few minutes.";

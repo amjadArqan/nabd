@@ -107,11 +107,6 @@ enum Level: Int, Comparable {
     static func < (a: Level, b: Level) -> Bool { a.rawValue < b.rawValue }
 }
 
-struct Fan {
-    var rpm: Double, min: Double, max: Double
-    var fraction: Double { max > min ? Swift.min(1, Swift.max(0, (rpm - min) / (max - min))) : 0 }
-}
-
 struct Temps {
     var cpu: Double?
     var cpuMax: Double?
@@ -267,6 +262,7 @@ struct Snapshot {
     var diskFree: UInt64?
     var diskTotal: UInt64?
     var procs: ProcReport?
+    var procsTime: Date?  // when the process list was taken (light samples carry the previous one)
     var advice: [Advice] = []
 
     var tempLevel: Level {
@@ -302,110 +298,6 @@ extension ProcessInfo.ThermalState {
         @unknown default: return "unknown"
         }
     }
-}
-
-// MARK: - SMC (CPU/GPU core temperatures and fans; no sudo needed)
-
-final class SMC {
-    private struct KeyData {
-        struct Vers { var major: UInt8 = 0, minor: UInt8 = 0, build: UInt8 = 0, reserved: UInt8 = 0; var release: UInt16 = 0 }
-        struct PLimit { var version: UInt16 = 0, length: UInt16 = 0; var cpu: UInt32 = 0, gpu: UInt32 = 0, mem: UInt32 = 0 }
-        struct KeyInfo { var dataSize: UInt32 = 0, dataType: UInt32 = 0; var dataAttributes: UInt8 = 0 }
-        var key: UInt32 = 0
-        var vers = Vers()
-        var pLimit = PLimit()
-        var keyInfo = KeyInfo()
-        var padding: UInt16 = 0
-        var result: UInt8 = 0
-        var status: UInt8 = 0
-        var data8: UInt8 = 0
-        var data32: UInt32 = 0
-        var bytes: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
-                    UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
-            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    }
-
-    private var conn: io_connect_t = 0
-    private var infoCache: [UInt32: (size: UInt32, type: UInt32)] = [:]
-    private(set) var cpuKeys: [UInt32] = []
-    private(set) var gpuKeys: [UInt32] = []
-    private var fanInfo: [(key: UInt32, min: Double, max: Double)] = []
-
-    static func fourCC(_ s: String) -> UInt32 { s.utf8.reduce(0) { ($0 << 8) | UInt32($1) } }
-    static func name(_ k: UInt32) -> String {
-        String(bytes: [UInt8(k >> 24), UInt8((k >> 16) & 0xff), UInt8((k >> 8) & 0xff), UInt8(k & 0xff)], encoding: .ascii) ?? "?"
-    }
-
-    init?() {
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
-        guard service != 0 else { return nil }
-        defer { IOObjectRelease(service) }
-        guard IOServiceOpen(service, mach_task_self_, 0, &conn) == kIOReturnSuccess else { return nil }
-        discover()
-    }
-
-    deinit { IOServiceClose(conn) }
-
-    private func call(_ input: inout KeyData) -> KeyData? {
-        var output = KeyData()
-        var outSize = MemoryLayout<KeyData>.stride
-        let r = IOConnectCallStructMethod(conn, 2, &input, MemoryLayout<KeyData>.stride, &output, &outSize)
-        return (r == kIOReturnSuccess && output.result == 0) ? output : nil
-    }
-
-    func read(_ key: UInt32) -> Double? {
-        var input = KeyData()
-        input.key = key
-        let info: (size: UInt32, type: UInt32)
-        if let cached = infoCache[key] {
-            info = cached
-        } else {
-            input.data8 = 9
-            guard let out = call(&input) else { return nil }
-            info = (out.keyInfo.dataSize, out.keyInfo.dataType)
-            infoCache[key] = info
-        }
-        input.keyInfo.dataSize = info.size
-        input.data8 = 5
-        guard let out = call(&input) else { return nil }
-        let b = withUnsafeBytes(of: out.bytes) { Array($0.prefix(Int(info.size))) }
-        switch SMC.name(info.type) {
-        case "flt " where b.count == 4: return Double(b.withUnsafeBytes { $0.loadUnaligned(as: Float32.self) })
-        case "sp78" where b.count == 2: return Double(Int16(bitPattern: UInt16(b[0]) << 8 | UInt16(b[1]))) / 256
-        case "fpe2" where b.count == 2: return Double(UInt16(b[0]) << 8 | UInt16(b[1])) / 4
-        case "ui8 " where b.count == 1: return Double(b[0])
-        case "ui32" where b.count == 4: return Double(b.reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
-        default: return nil
-        }
-    }
-
-    /// Core sensor keys differ per chip generation, so enumerate them once instead of hardcoding.
-    private func discover() {
-        guard let count = read(SMC.fourCC("#KEY")) else { return }
-        var alt: [UInt32] = []
-        for i in 0..<UInt32(count) {
-            var input = KeyData()
-            input.data8 = 8
-            input.data32 = i
-            guard let key = call(&input)?.key, key >> 24 == 0x54 else { continue }  // "T…"
-            guard let v = read(key), let type = infoCache[key]?.type, ["flt ", "sp78"].contains(SMC.name(type)) else { continue }
-            guard v > 5, v < 130 else { continue }
-            switch UInt8((key >> 16) & 0xff) {
-            case 0x70, 0x65: cpuKeys.append(key)  // Tp… / Te…
-            case 0x67: gpuKeys.append(key)        // Tg…
-            case 0x66: alt.append(key)            // Tf… (M3 family)
-            default: break
-            }
-        }
-        if cpuKeys.isEmpty { cpuKeys = alt }
-        let fans = Int(read(SMC.fourCC("FNum")) ?? 0)
-        for i in 0..<min(fans, 4) {
-            fanInfo.append((SMC.fourCC("F\(i)Ac"), read(SMC.fourCC("F\(i)Mn")) ?? 0, read(SMC.fourCC("F\(i)Mx")) ?? 0))
-        }
-    }
-
-    func values(_ keys: [UInt32]) -> [Double] { keys.compactMap { read($0) }.filter { $0 >= 20 && $0 < 130 } }
-    func fans() -> [Fan] { fanInfo.compactMap { f in read(f.key).map { Fan(rpm: $0, min: f.min, max: f.max) } } }
 }
 
 // MARK: - HID sensors (battery, SSD, and a CPU fallback when SMC keys are unknown)
@@ -1162,6 +1054,7 @@ final class Sampler {
         var size = MemoryLayout<timeval>.stride
         if sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0 { s.uptime = Date().timeIntervalSince1970 - Double(boot.tv_sec) }
         s.procs = full ? processes() : previous?.procs
+        s.procsTime = full ? Date() : previous?.procsTime
         s.advice = Advisor.advise(s)
         return s
     }
@@ -1438,6 +1331,13 @@ enum Advisor {
                               detail: L("macOS needs free space for swap and updates. Empty the Trash, or clear caches such as node_modules and Docker images.")))
         }
 
+        let worktreeBytes = UserDefaults.standard.double(forKey: "worktreeBytes")
+        if worktreeBytes >= 10e9 {
+            out.append(Advice(id: "worktrees", level: Double(s.diskFree ?? .max) < 30e9 ? .warn : .ok,
+                              title: L("Git worktrees take %@ (%@)", ltr(fmtDisk(UInt64(worktreeBytes))), String(UserDefaults.standard.integer(forKey: "worktreeCount"))),
+                              detail: L("AI sessions leave a worktree per task. Review them in Nabd's window → Storage; clean, merged ones can go to the Trash.")))
+        }
+
         if let power = s.power, power.plugged, let battery = power.battery, battery < -2 {
             out.append(Advice(id: "charger", level: .warn, title: L("The battery drains while plugged in"),
                               detail: L("The Mac draws %@ more than the charger (%@) supplies. Use a stronger charger or lighten the load.",
@@ -1699,6 +1599,40 @@ enum CLI {
         }
     }
 
+    /// CPU time per app recorded by the running Nabd.
+    static func top(hours: Int) {
+        let rows = UsageTracker().top(hoursBack: hours, limit: 15)
+        print("CPU time in the last \(hours) h (recorded while Nabd runs; 1h = one core busy for an hour)")
+        if rows.isEmpty { print("  nothing recorded yet") }
+        for row in rows { print("  " + pad(row.name, 34) + lpad(fmtCPUTime(row.seconds), 10)) }
+    }
+
+    /// Git worktrees and their sizes, measured now.
+    static func storage() {
+        let scanner = StorageScanner()
+        let sessions = ProcessScanner.analyze(ProcessScanner.list()).sessions.map(\.cwd)
+        scanner.sessionFolders = { sessions }
+        scanner.scan()
+        while scanner.scanning || scanner.lastScan == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.3)) }
+        let byRepo = Dictionary(grouping: scanner.worktrees, by: \.repo).sorted { a, b in a.value.reduce(0) { $0 + $1.size } > b.value.reduce(0) { $0 + $1.size } }
+        print("GIT WORKTREES  \(scanner.worktrees.count) · \(fmtDisk(scanner.worktreeTotal))")
+        for (repo, items) in byRepo {
+            print("  " + pad(repo, 60) + lpad("\(items.count)", 4) + lpad(fmtDisk(items.reduce(0) { $0 + $1.size }), 10))
+        }
+        func line(_ title: String, _ items: [WorktreeInfo]) {
+            print("  " + pad(title, 58) + lpad("\(items.count)", 6) + lpad(fmtDisk(items.reduce(0) { $0 + $1.size }), 10))
+        }
+        let w = scanner.worktrees
+        print("\nBY STATE")
+        line("uncommitted changes (kept)", w.filter(\.dirty))
+        line("open in a running session (kept)", w.filter { $0.inUse && !$0.dirty })
+        line("clean, branch merged (safe to remove)", w.filter { $0.removable && $0.merged })
+        line("clean, branch not merged (branch stays if removed)", w.filter { $0.removable && !$0.merged })
+        line("folder already gone (git list only)", w.filter(\.missing))
+        print("\nLARGE FOLDERS")
+        for b in scanner.buckets.sorted(by: { ($0.size ?? 0) > ($1.size ?? 0) }) { print("  " + pad(b.title, 30) + lpad(b.size.map(fmtDisk) ?? "—", 10)) }
+    }
+
     /// What the guard did lately and why.
     static func guardLog() {
         let log = CFPreferencesCopyAppValue("guardLog" as CFString, "local.nabd.monitor" as CFString) as? [String] ?? []
@@ -1733,6 +1667,8 @@ enum CLI {
           nabd guard [limit]   what the guard sees: system CPU and each session's load (dry run)
           nabd continue        forced continue: resume every session the guard paused
           nabd log             what the guard paused or continued lately, and why
+          nabd top [hours]     CPU time per app over the last hours (default 24)
+          nabd storage         git worktrees and large folders, measured now
           nabd login [on|off]  start with the Mac
           nabd calm <pid|name> move a process tree to efficiency cores (cooler, slower)
           nabd uncalm <pid|name>
@@ -1922,6 +1858,7 @@ final class Model: ObservableObject {
 
     /// Nothing may stay stopped after Nabd is gone.
     func shutdown() {
+        usage.save()
         guardTimer?.cancel()
         guardQueue.sync { guardian.release() }
     }
@@ -1960,7 +1897,15 @@ final class Model: ObservableObject {
         }
     }
 
+    /// CPU time per app over the last week, for the Usage page.
+    let usage = UsageTracker()
+    private var recordedProcs: Date?
+
     func apply(_ s: Snapshot) {
+        if let taken = s.procsTime, taken != recordedProcs, let groups = s.procs?.groups {
+            recordedProcs = taken
+            usage.record(groups, at: taken)
+        }
         snap = s
         pushGuardInput(runNow: false)
         trackEnergy(s.power?.draw)
@@ -2181,7 +2126,7 @@ private struct OptionalDomain: ViewModifier {
 
 // MARK: Shared cards (menu bar panel and desktop window)
 
-private func smallTitle(_ text: String) -> some View {
+func smallTitle(_ text: String) -> some View {
     Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
 }
 
@@ -2695,7 +2640,7 @@ struct PopoverView: View {
 // MARK: - Desktop window
 
 enum Page: String, CaseIterable, Identifiable {
-    case overview, cpu, memory, network, disk, power, sensors, claude, cleaner
+    case overview, cpu, memory, network, disk, power, sensors, usage, claude, storage, cleaner
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -2708,6 +2653,8 @@ enum Page: String, CaseIterable, Identifiable {
         case .sensors: return L("Sensors")
         case .claude: return L("AI Agents")
         case .cleaner: return L("Clean Up")
+        case .storage: return L("Storage")
+        case .usage: return L("Usage")
         }
     }
     var symbol: String {
@@ -2721,6 +2668,8 @@ enum Page: String, CaseIterable, Identifiable {
         case .sensors: return "thermometer.medium"
         case .claude: return "terminal"
         case .cleaner: return "sparkles"
+        case .storage: return "externaldrive"
+        case .usage: return "chart.bar.xaxis"
         }
     }
 }
@@ -2728,11 +2677,13 @@ enum Page: String, CaseIterable, Identifiable {
 struct DashboardView: View {
     @ObservedObject var model: Model
     @ObservedObject var cleaner: Cleaner
+    @ObservedObject var storage: StorageScanner
     @State private var page: Page?
 
-    init(model: Model, cleaner: Cleaner, page: Page = .overview) {
+    init(model: Model, cleaner: Cleaner, storage: StorageScanner, page: Page = .overview) {
         self.model = model
         self.cleaner = cleaner
+        self.storage = storage
         _page = State(initialValue: page)
     }
 
@@ -2740,12 +2691,12 @@ struct DashboardView: View {
         NavigationSplitView {
             List(selection: $page) {
                 Section {
-                    ForEach([Page.overview, .cpu, .memory, .network, .disk, .power, .sensors]) { p in
+                    ForEach([Page.overview, .cpu, .memory, .network, .disk, .power, .sensors, .usage]) { p in
                         Label(p.title, systemImage: p.symbol).tag(p)
                     }
                 }
                 Section(L("Tools")) {
-                    ForEach([Page.claude, .cleaner]) { p in
+                    ForEach([Page.claude, .storage, .cleaner]) { p in
                         Label(p.title, systemImage: p.symbol).tag(p)
                     }
                 }
@@ -2765,6 +2716,8 @@ struct DashboardView: View {
                     case .sensors: sensorsPage
                     case .claude: claudePage
                     case .cleaner: CleanerPage(cleaner: cleaner)
+                    case .storage: StoragePage(storage: storage)
+                    case .usage: UsagePage(tracker: model.usage, model: model)
                     }
                 }
                 .padding(24)
@@ -2779,7 +2732,10 @@ struct DashboardView: View {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
-        .onChange(of: page) { new in if new == .cleaner, cleaner.items.isEmpty { cleaner.scan() } }
+        .onChange(of: page) { new in
+            if new == .cleaner, cleaner.items.isEmpty { cleaner.scan() }
+            if new == .storage, storage.lastScan == nil { storage.scan() }
+        }
     }
 
     private var s: Snapshot { model.snap }
@@ -2929,6 +2885,7 @@ struct DashboardView: View {
                         .font(.system(size: 12))
                     Spacer()
                     Button(L("Open Clean Up")) { page = .cleaner }
+                    Button(L("Open Storage")) { page = .storage }
                 }
             }
         }
@@ -3177,6 +3134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private let toast = Toast()
     private var window: NSWindow?
     private let cleaner = Cleaner()
+    private let storage = StorageScanner()
     private var notificationsAllowed = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -3200,6 +3158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         model.onUpdate = { [weak self] in self?.updateTitle() }
         model.onPause = { [weak self] item, label, cpu in self?.announce(item, label: label, cpu: cpu) }
         model.onOpenWindow = { [weak self] in self?.openWindow() }
+        storage.sessionFolders = { [weak self] in self?.model.snap.procs?.sessions.map(\.cwd) ?? [] }
+        // Measure worktrees in the background now and then, so suggestions know when they pile up.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in self?.storage.scan() }
+        let measure = Timer(timeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.storage.scan() }
+        RunLoop.main.add(measure, forMode: .common)
         setUpNotifications()
         // `nabd continue` from a terminal.
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("local.nabd.monitor.continue"), object: nil, queue: .main) { [weak self] _ in
@@ -3307,7 +3270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     func openWindow() {
         popover.performClose(nil)
         if window == nil {
-            let host = NSHostingController(rootView: DashboardView(model: model, cleaner: cleaner))
+            let host = NSHostingController(rootView: DashboardView(model: model, cleaner: cleaner, storage: storage))
             let w = NSWindow(contentViewController: host)
             w.title = L("Nabd")
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
@@ -3417,6 +3380,13 @@ enum Main {
             model.guardStatus = Guard.Status(cpu: 62, paused: paused, exempt: sessions.dropFirst(2).prefix(1).map(\.id))
         }
         let cleaner = Cleaner()
+        let storage = StorageScanner()
+        storage.sessionFolders = { model.snap.procs?.sessions.map(\.cwd) ?? [] }
+        if page == .storage {
+            storage.scan()
+            let deadline = Date().addingTimeInterval(600)
+            while storage.scanning || storage.lastScan == nil, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.3)) }
+        }
         if page == .cleaner {
             cleaner.scan()
             let deadline = Date().addingTimeInterval(90)
@@ -3427,7 +3397,7 @@ enum Main {
             RunLoop.main.run(until: Date().addingTimeInterval(1))
         }
         let view: NSView = page != nil
-            ? NSHostingView(rootView: DashboardView(model: model, cleaner: cleaner, page: page!).frame(width: 980, height: 700))
+            ? NSHostingView(rootView: DashboardView(model: model, cleaner: cleaner, storage: storage, page: page!).frame(width: 980, height: 700))
             : demo == "toast"
             ? NSHostingView(rootView: ToastView(title: L("Nabd paused a session"), message: L("“%@”: ", "my-project") + L("The CPU reached %@.", "97%") + " " + L("It continues when things calm down, or choose Force Continue."), onContinue: {}, onDismiss: {}).padding(12).background(Color(nsColor: .windowBackgroundColor)))
             : NSHostingView(rootView: PopoverView(model: model, initialTab: tab).background(Color(nsColor: .windowBackgroundColor)))
@@ -3459,6 +3429,8 @@ enum Main {
         case "guard": CLI.guardReport(limit: args.count > 1 ? Int(args[args.startIndex + 1]) ?? 90 : 90)
         case "continue": CLI.forceContinue()
         case "log": CLI.guardLog()
+        case "top": CLI.top(hours: args.count > 1 ? Int(args[args.startIndex + 1]) ?? 24 : 24)
+        case "storage": CLI.storage()
         case "login": CLI.login(args.count > 1 ? args[args.startIndex + 1] : nil)
         case "calm", "uncalm":
             guard args.count > 1 else { return CLI.usage() }
@@ -3481,4 +3453,7 @@ extension PopoverView {
     }
 }
 
-Main.run()
+@main
+enum Entry {
+    static func main() { Main.run() }
+}
